@@ -32,18 +32,18 @@ session.headers.update({
 if AUTH_BEARER:
     session.headers["Authorization"] = f"Bearer {AUTH_BEARER}"
 
-def _rpc(method: str, params: Dict[str, Any] | None = None, id_: int | str | None = None) -> Dict[str, Any]:
-    """Minimal JSON-RPC over Streamable HTTP (POST). Adds session header if negotiated."""
+def _rpc(method: str, params: Dict[str, Any] | None = None, id_: int | str | None = None):
+    """Send request to MCP server and print response as-is, no JSON parsing/checking."""
     payload = {"jsonrpc": "2.0", "id": id_ or str(uuid.uuid4()), "method": method}
     if params is not None:
         payload["params"] = params
     r = session.post(MCP_ENDPOINT, data=json.dumps(payload).encode("utf-8"), timeout=60)
     r.raise_for_status()
-    # capture/propagate session id if server returns it
     sid = r.headers.get(SESSION_ID_HEADER)
     if sid:
         session.headers[SESSION_ID_HEADER] = sid
-    return r.json()
+    print(r.text)
+    sys.exit(0)
 
 # ---------- lifecycle: initialize ----------
 def initialize():
@@ -215,5 +215,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print(json.dumps({"error": str(e)}))
+        print(str(e))
         sys.exit(1)
