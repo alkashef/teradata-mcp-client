@@ -32,11 +32,16 @@ class DataQualityRunner:
         payload = {"jsonrpc": "2.0", "id": id_ or str(uuid.uuid4()), "method": method}
         if params is not None:
             payload["params"] = params
+        # Print input (request payload) without exposing secrets
+        print("[mcp-client => mcp-server]")
+        print(json.dumps(payload, indent=2))
         r = self.session.post(self.MCP_ENDPOINT, data=json.dumps(payload).encode("utf-8"), timeout=60)
         r.raise_for_status()
         sid = r.headers.get(self.SESSION_ID_HEADER)
         if sid:
             self.session.headers[self.SESSION_ID_HEADER] = sid
+        # Print output (raw server response) exactly as-is
+        print("[mcp-client <= mcp-server]")
         print(r.text)
         sys.exit(0)
 

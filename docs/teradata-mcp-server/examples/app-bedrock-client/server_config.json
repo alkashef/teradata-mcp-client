@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "teradata": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/PATH/teradata-mcp-server",
+        "run",
+        "teradata-mcp-server"
+      ],
+      "env": {
+        "DATABASE_URI": "teradata://username:password@host:1025/databasename"
+      }
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "teradata_mcp_streamable": {
+      "command": "npx",
+      "args": ["mcp-remote", "http://localhost:8001/mcp/"]
+    }
+  }
+}
