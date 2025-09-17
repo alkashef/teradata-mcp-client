@@ -28,6 +28,24 @@ class DataQualityRunner:
         if self.AUTH_BEARER:
             self.session.headers["Authorization"] = f"Bearer {self.AUTH_BEARER}"
 
+    def _extract_json_from_sse(self, text: str) -> Dict[str, Any] | None:
+        if not text:
+            return None
+        t = text.strip().replace("\r\n", "\n")
+        # Look for 'data: {json}' lines
+        for line in t.split("\n"):
+            if line.startswith("data: "):
+                json_part = line[len("data: "):].strip()
+                try:
+                    return json.loads(json_part)
+                except Exception:
+                    continue
+        # Fallback: try whole body
+        try:
+            return json.loads(t)
+        except Exception:
+            return None
+
     def _rpc(self, method: str, params: Dict[str, Any] | None = None, id_: int | str | None = None):
         payload = {"jsonrpc": "2.0", "id": id_ or str(uuid.uuid4()), "method": method}
         if params is not None:
@@ -43,7 +61,11 @@ class DataQualityRunner:
         # Print output (raw server response) exactly as-is
         print("[mcp-client <= mcp-server]")
         print(r.text)
-        sys.exit(0)
+        # Parse JSON result (best-effort) so caller can proceed
+        try:
+            return r.json()
+        except Exception:
+            return self._extract_json_from_sse(r.text) or {}
 
     def initialize(self):
         params = {
@@ -55,7 +77,12 @@ class DataQualityRunner:
         self._rpc("initialize", params)
 
     def list_tools(self) -> List[Dict[str, Any]]:
-        self._rpc("tools/list")
+        resp = self._rpc("tools/list", {})
+        if not isinstance(resp, dict):
+            return []
+        result = resp.get("result") or resp
+        tools = result.get("tools") or result.get("result") or []
+        return tools if isinstance(tools, list) else []
 
     def pick_quality_tools(self, tools: List[Dict[str, Any]]):
         def has_kw(t: Dict[str, Any], kws: List[str]) -> bool:
@@ -99,4 +126,59 @@ class DataQualityRunner:
         cfg_path = os.getenv("DQ_CONFIG", "dq_config.yml")
         cfg = self.load_config(cfg_path)
         self.initialize()
-        # The rest of the logic is omitted since _rpc always prints and exits
+        tools = self.list_tools()
+        # Heuristic picking of tools by keywords
+        def has_kw(t: Dict[str, Any], kws: List[str]) -> bool:
+            name = (t.get("name") or "").lower()
+            desc = (t.get("description") or "").lower()
+            return any(k in name or k in desc for k in kws)
+        t_null  = next((t for t in tools if has_kw(t, ["qlty", "quality"]) and has_kw(t, ["null", "missing"])), None)
+        t_range = next((t for t in tools if has_kw(t, ["qlty", "quality"]) and has_kw(t, ["range", "min", "max"])), None)
+        t_uniq  = next((t for t in tools if has_kw(t, ["qlty", "quality"]) and has_kw(t, ["unique", "uniqueness", "distinct"])), None)
+
+        # Iterate datasets from config and call matching tools. We only print I/O; no aggregation.
+        for dataset in cfg.get("datasets", []):
+            table_fqn = dataset.get("table")
+            if not table_fqn:
+                continue
+            schema = dataset.get("schema")
+            database = dataset.get("database")
+
+            # NULLS / missing values
+            null_cols = (dataset.get("null_check", {}) or {}).get("columns", [])
+            if t_null and null_cols:
+                args: Dict[str, Any] = {"table": table_fqn, "columns": null_cols}
+                if schema: args["schema"] = schema
+                if database: args["database"] = database
+                self._rpc("tools/call", {"name": t_null.get("name"), "arguments": args})
+
+            # RANGE checks (if server exposes a suitable tool)
+            ranges = (dataset.get("range_check", {}) or {}).get("columns", [])
+            if t_range and ranges:
+                for rng in ranges:
+                    col = rng.get("column")
+                    if not col:
+                        continue
+                    args: Dict[str, Any] = {
+                        "table": table_fqn,
+                        "column": col,
+                        "min": rng.get("min"),
+                        "max": rng.get("max"),
+                        "inclusive": rng.get("inclusive", True),
+                    }
+                    if schema: args["schema"] = schema
+                    if database: args["database"] = database
+                    self._rpc("tools/call", {"name": t_range.get("name"), "arguments": args})
+
+            # UNIQUENESS checks
+            uniq_cfg = dataset.get("uniqueness_check", {}) or {}
+            uniq_cols = uniq_cfg.get("columns", [])
+            if t_uniq and uniq_cols:
+                args: Dict[str, Any] = {
+                    "table": table_fqn,
+                    "columns": uniq_cols,
+                    "approximate": uniq_cfg.get("approximate", False),
+                }
+                if schema: args["schema"] = schema
+                if database: args["database"] = database
+                self._rpc("tools/call", {"name": t_uniq.get("name"), "arguments": args})
