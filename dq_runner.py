@@ -67,6 +67,68 @@ class DataQualityRunner:
         except Exception:
             return self._extract_json_from_sse(r.text) or {}
 
+    def _call_tool_with_fallbacks(self, tool_name: str, base_args: Dict[str, Any]) -> Dict[str, Any]:
+        # Try multiple shapes for params
+        param_shapes = [
+            ("name", "arguments"),
+            ("tool_name", "arguments"),
+            ("toolName", "arguments"),
+            ("name", "args"),
+            ("name", "parameters"),
+        ]
+        # Try argument key variants
+        def arg_variants(args: Dict[str, Any]) -> List[Dict[str, Any]]:
+            variants = [args]
+            # snake_case to camelCase
+            camel = {}
+            for k, v in args.items():
+                if "_" in k:
+                    parts = k.split("_")
+                    camel_k = parts[0] + "".join(p.title() for p in parts[1:])
+                    camel[camel_k] = v
+                else:
+                    camel[k] = v
+            variants.append(camel)
+            # generic keys
+            generic = args.copy()
+            if "database_name" in args and "database" not in generic:
+                generic["database"] = args["database_name"]
+            if "table_name" in args and "table" not in generic:
+                generic["table"] = args["table_name"]
+            if "column_name" in args and "column" not in generic:
+                generic["column"] = args["column_name"]
+            variants.append(generic)
+            return variants
+
+        last_resp: Dict[str, Any] = {}
+        for key_name, key_args in param_shapes:
+            for av in arg_variants(base_args):
+                # 1) arguments as object
+                params = {key_name: tool_name, key_args: av}
+                resp = self._rpc("tools/call", params)
+                last_resp = resp if isinstance(resp, dict) else {}
+                err = last_resp.get("error") if isinstance(last_resp, dict) else None
+                if not err or not isinstance(err, dict) or err.get("code") != -32602:
+                    return last_resp
+
+                # 2) arguments as JSON string
+                params = {key_name: tool_name, key_args: json.dumps(av)}
+                resp = self._rpc("tools/call", params)
+                last_resp = resp if isinstance(resp, dict) else {}
+                err = last_resp.get("error") if isinstance(last_resp, dict) else None
+                if not err or not isinstance(err, dict) or err.get("code") != -32602:
+                    return last_resp
+
+                # 3) content/text envelope
+                content_env = {"content": [{"type": "text", "text": json.dumps(av)}]}
+                params = {key_name: tool_name, key_args: content_env}
+                resp = self._rpc("tools/call", params)
+                last_resp = resp if isinstance(resp, dict) else {}
+                err = last_resp.get("error") if isinstance(last_resp, dict) else None
+                if not err or not isinstance(err, dict) or err.get("code") != -32602:
+                    return last_resp
+        return last_resp
+
     def initialize(self):
         params = {
             "protocolVersion": "2025-03-26",
@@ -75,6 +137,11 @@ class DataQualityRunner:
         }
         self.log.info("Initializing MCP session…")
         self._rpc("initialize", params)
+        # Complete handshake with initialized notification (some servers require it)
+        try:
+            self._rpc("initialized", {"clientCapabilities": {}}, id_=0)
+        except Exception:
+            pass
 
     def list_tools(self) -> List[Dict[str, Any]]:
         resp = self._rpc("tools/list", {})
@@ -126,59 +193,41 @@ class DataQualityRunner:
         cfg_path = os.getenv("DQ_CONFIG", "dq_config.yml")
         cfg = self.load_config(cfg_path)
         self.initialize()
-        tools = self.list_tools()
-        # Heuristic picking of tools by keywords
-        def has_kw(t: Dict[str, Any], kws: List[str]) -> bool:
-            name = (t.get("name") or "").lower()
-            desc = (t.get("description") or "").lower()
-            return any(k in name or k in desc for k in kws)
-        t_null  = next((t for t in tools if has_kw(t, ["qlty", "quality"]) and has_kw(t, ["null", "missing"])), None)
-        t_range = next((t for t in tools if has_kw(t, ["qlty", "quality"]) and has_kw(t, ["range", "min", "max"])), None)
-        t_uniq  = next((t for t in tools if has_kw(t, ["qlty", "quality"]) and has_kw(t, ["unique", "uniqueness", "distinct"])), None)
 
-        # Iterate datasets from config and call matching tools. We only print I/O; no aggregation.
+        # Helper to split FQN into database_name and table_name (e.g., DB.table)
+        def parse_table(fqn: str) -> tuple[str | None, str | None]:
+            parts = (fqn or "").split(".")
+            if len(parts) == 2:
+                return parts[0], parts[1]
+            if len(parts) == 1:
+                return None, parts[0]
+            # If more than 2 parts, take last two as db.table
+            return parts[-2], parts[-1]
+
+        # Iterate datasets and call known quality tools directly
         for dataset in cfg.get("datasets", []):
             table_fqn = dataset.get("table")
             if not table_fqn:
                 continue
-            schema = dataset.get("schema")
-            database = dataset.get("database")
+            db_name, tbl_name = parse_table(table_fqn)
 
-            # NULLS / missing values
+            # NULL checks: table-level missing + per-column rows with missing
             null_cols = (dataset.get("null_check", {}) or {}).get("columns", [])
-            if t_null and null_cols:
-                args: Dict[str, Any] = {"table": table_fqn, "columns": null_cols}
-                if schema: args["schema"] = schema
-                if database: args["database"] = database
-                self._rpc("tools/call", {"name": t_null.get("name"), "arguments": args})
+            if null_cols:
+                # Table-level missing summary (if exposed by server)
+                self._call_tool_with_fallbacks("qlty_missingValues", {"database_name": db_name, "table_name": tbl_name})
+                for col in null_cols:
+                    self._call_tool_with_fallbacks("qlty_rowsWithMissingValues", {"database_name": db_name, "table_name": tbl_name, "column_name": col})
 
-            # RANGE checks (if server exposes a suitable tool)
+            # RANGE checks: run univariate statistics for each column
             ranges = (dataset.get("range_check", {}) or {}).get("columns", [])
-            if t_range and ranges:
-                for rng in ranges:
-                    col = rng.get("column")
-                    if not col:
-                        continue
-                    args: Dict[str, Any] = {
-                        "table": table_fqn,
-                        "column": col,
-                        "min": rng.get("min"),
-                        "max": rng.get("max"),
-                        "inclusive": rng.get("inclusive", True),
-                    }
-                    if schema: args["schema"] = schema
-                    if database: args["database"] = database
-                    self._rpc("tools/call", {"name": t_range.get("name"), "arguments": args})
+            for rng in ranges:
+                col = rng.get("column")
+                if not col:
+                    continue
+                self._call_tool_with_fallbacks("qlty_univariateStatistics", {"database_name": db_name, "table_name": tbl_name, "column_name": col})
 
-            # UNIQUENESS checks
-            uniq_cfg = dataset.get("uniqueness_check", {}) or {}
-            uniq_cols = uniq_cfg.get("columns", [])
-            if t_uniq and uniq_cols:
-                args: Dict[str, Any] = {
-                    "table": table_fqn,
-                    "columns": uniq_cols,
-                    "approximate": uniq_cfg.get("approximate", False),
-                }
-                if schema: args["schema"] = schema
-                if database: args["database"] = database
-                self._rpc("tools/call", {"name": t_uniq.get("name"), "arguments": args})
+            # UNIQUENESS checks: use distinct categories per column (best-effort)
+            uniq_cols = (dataset.get("uniqueness_check", {}) or {}).get("columns", [])
+            for col in uniq_cols:
+                self._call_tool_with_fallbacks("qlty_distinctCategories", {"database_name": db_name, "table_name": tbl_name, "column_name": col})
