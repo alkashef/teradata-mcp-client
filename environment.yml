@@ -1,0 +1,10 @@
+name: teradata-mcp-dq
+channels: [conda-forge]
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - mcp>=1.9.2
+      - requests>=2.32
+      - python-dotenv>=1.0
+      - pyyaml>=6.0.1

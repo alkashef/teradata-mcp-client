@@ -1,0 +1,30 @@
+# One-off run: define tables and checks
+datasets:
+  - table: sales.orders
+    database: prod     # optional; omit if embedded in table or server default
+    schema: sales      # optional
+    null_check:
+      columns: [customer_id, order_date, amount]
+    range_check:
+      columns:
+        - column: amount
+          min: 0
+          max: 100000
+          inclusive: true
+        - column: discount_pct
+          min: 0.0
+          max: 0.9
+          inclusive: true
+    uniqueness_check:
+      columns: [order_id]
+
+  - table: crm.customers
+    null_check:
+      columns: [customer_id, email]
+    range_check:
+      columns:
+        - column: age
+          min: 0
+          max: 120
+    uniqueness_check:
+      columns: [customer_id]
