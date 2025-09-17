@@ -1,30 +1,28 @@
 # One-off run: define tables and checks
 datasets:
-  - table: sales.orders
-    database: prod     # optional; omit if embedded in table or server default
-    schema: sales      # optional
+  - table: BANK_DB.branches
     null_check:
-      columns: [customer_id, order_date, amount]
+      columns: [branch_id, branch_name, governorate, branch_address, latitude, longitude]
     range_check:
       columns:
-        - column: amount
-          min: 0
-          max: 100000
+        - column: latitude
+          min: -90.0
+          max: 90.0
           inclusive: true
-        - column: discount_pct
-          min: 0.0
-          max: 0.9
+        - column: longitude
+          min: -180.0
+          max: 180.0
           inclusive: true
     uniqueness_check:
-      columns: [order_id]
+      columns: [branch_id]
 
-  - table: crm.customers
+  - table: BANK_DB.transactions
     null_check:
-      columns: [customer_id, email]
+      columns: [transaction_id, transaction_currency, transaction_type, transaction_amount, branch_id]
     range_check:
       columns:
-        - column: age
+        - column: transaction_amount
           min: 0
-          max: 120
+          max: 99999.99
     uniqueness_check:
-      columns: [customer_id]
+      columns: [transaction_id]
