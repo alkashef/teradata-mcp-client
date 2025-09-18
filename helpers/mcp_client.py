@@ -99,34 +99,41 @@ class McpClient:
         - Retries with argument key variants (table_name vs tableName, etc.).
         - Caches failing (tool, frozenset(arg_keys)) signature for -32602 suppression.
         """
+        # Cache invalid parameter signatures (by key set and by key/value tuple)
         if not hasattr(self, '_failure_cache'):
             self._failure_cache: set[tuple[str, frozenset[str]]] = set()
+        if not hasattr(self, '_failure_value_cache'):
+            self._failure_value_cache: set[tuple[str, tuple]] = set()
 
         canonical = self._normalize_tool_name(tool)
         args = arguments.copy() if arguments else {}
         signature = (canonical, frozenset(args.keys()))
-        if signature in self._failure_cache:
+        value_signature = (canonical, tuple(sorted(args.items())))
+        if signature in self._failure_cache or value_signature in self._failure_value_cache:
             start_block('[tool-call suppressed]')
-            log_line(f"{canonical} {sorted(args.keys())} previously invalid (-32602) – suppressed")
+            log_line(f"{canonical} keys={sorted(args.keys())} values={args} previously invalid (-32602) – suppressed")
             end_block()
             return {'error': {'code': -32602, 'message': 'suppressed cached invalid params'}, 'tool': canonical}
 
         # First attempt direct
         result = self.call('tools/call', {'name': canonical, 'arguments': args})
         if self._is_invalid_params(result):
+            self._failure_cache.add(signature)
+            self._failure_value_cache.add(value_signature)
             # Retry with key variants if any
             for variant_args in self._argument_variants(args):
                 variant_signature = (canonical, frozenset(variant_args.keys()))
-                if variant_signature in self._failure_cache:
+                variant_value_signature = (canonical, tuple(sorted(variant_args.items())))
+                if variant_signature in self._failure_cache or variant_value_signature in self._failure_value_cache:
                     start_block('[tool-variant suppressed]')
-                    log_line(f"{canonical} {sorted(variant_args.keys())} variant previously invalid – skipped")
+                    log_line(f"{canonical} keys={sorted(variant_args.keys())} values={variant_args} variant previously invalid – skipped")
                     end_block()
                     continue
                 variant_result = self.call('tools/call', {'name': canonical, 'arguments': variant_args})
                 if not self._is_invalid_params(variant_result):
                     return variant_result | {'_tool': canonical, '_args': variant_args}
                 self._failure_cache.add(variant_signature)
-            self._failure_cache.add(signature)
+                self._failure_value_cache.add(variant_value_signature)
         return result | {'_tool': canonical, '_args': args}
 
     # Internal helpers ---------------------------------------------------------
