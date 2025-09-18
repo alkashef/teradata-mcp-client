@@ -106,6 +106,9 @@ class McpClient:
         args = arguments.copy() if arguments else {}
         signature = (canonical, frozenset(args.keys()))
         if signature in self._failure_cache:
+            start_block('[tool-call suppressed]')
+            log_line(f"{canonical} {sorted(args.keys())} previously invalid (-32602) – suppressed")
+            end_block()
             return {'error': {'code': -32602, 'message': 'suppressed cached invalid params'}, 'tool': canonical}
 
         # First attempt direct
@@ -115,6 +118,9 @@ class McpClient:
             for variant_args in self._argument_variants(args):
                 variant_signature = (canonical, frozenset(variant_args.keys()))
                 if variant_signature in self._failure_cache:
+                    start_block('[tool-variant suppressed]')
+                    log_line(f"{canonical} {sorted(variant_args.keys())} variant previously invalid – skipped")
+                    end_block()
                     continue
                 variant_result = self.call('tools/call', {'name': canonical, 'arguments': variant_args})
                 if not self._is_invalid_params(variant_result):
@@ -135,6 +141,8 @@ class McpClient:
             'missingValues': 'qlty_missingValues',
             'distinctCategories': 'qlty_distinctCategories',
             'univariateStatistics': 'qlty_univariateStatistics',
+            # composite/reporting prompt objects
+            'databaseQuality': 'qlty_databaseQuality',
         }
         if name in mapping:
             return mapping[name]
