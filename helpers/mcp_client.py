@@ -43,8 +43,24 @@ class McpClient:
         for line in resp.text.splitlines():
             log_line(line)
         end_block()
+        # Attempt SSE-friendly parsing: collect JSON from lines beginning with 'data:'
+        data: Dict[str, Any] = {}
         try:
-            data = resp.json()
+            if 'data:' in resp.text:
+                for line in resp.text.splitlines():
+                    if line.startswith('data:'):
+                        candidate = line[len('data:'):].strip()
+                        if candidate:
+                            try:
+                                parsed = json.loads(candidate)
+                                if isinstance(parsed, dict):
+                                    data = parsed  # last dict wins (single response expected)
+                            except Exception:
+                                pass
+            if not data:
+                data_json = resp.json()
+                if isinstance(data_json, dict):
+                    data = data_json
         except Exception:
             data = {}
         sid = resp.headers.get(self.session_id_header)
@@ -60,5 +76,14 @@ class McpClient:
             'clientInfo': {'name': 'dq-orchestrator', 'version': '0.1.0'},
         })
 
-    def initialized(self) -> Dict[str, Any]:
-        return self.call('initialized', {'clientCapabilities': {}}, id_='0')
+
+    # Capability queries
+    def list_tools(self) -> Dict[str, Any]:
+        """Return server-declared tool metadata if supported.
+
+        Returns an empty dict on failure for resilience.
+        """
+        try:
+            return self.call('tools/list', {})
+        except Exception:
+            return {}

@@ -69,7 +69,7 @@ This will open a new terminal, set Teradata connection variables, and launch:
 teradata-mcp-server --mcp_transport streamable-http --mcp_port 8001 --profile all
 ```
 
-### 5. Run the Orchestrator
+### 5. Run the Data Quality Client
 
 Provide a natural language prompt:
 ```bash
@@ -87,18 +87,20 @@ Finally it prints a summarized dictionary with issues and recommendations.
 
 ---
 
-## 🔄 Seven-Step Workflow
+## 🔄 Workflow (Context-Enhanced)
 
 Implemented inside `data_quality_client.py` (`DataQualityOrchestrator`):
 1. `ingest_user_prompt(prompt)` – store raw user request.
-2. `derive_intent_with_llm()` – LLM parses goal, targets, constraints.
-3. `ensure_connection()` – MCP handshake (`initialize` + `initialized`).
-4. `discover_schema()` – LLM-planned metadata tools (e.g. `base_databaseList`, `base_tableList`).
-5. `run_quality_metrics()` – LLM chooses quality tool names (e.g. `qlty_missingValues`).
-6. (Implicit collection) – Results accumulated internally.
-7. `summarize_with_llm()` – LLM produces issues & recommendations.
+2. `ensure_connection()` – MCP handshake (`initialize` + `initialized`).
+3. `inventory_schema()` – gather tables list for a single target database (see single-database scope below).
+4. `inventory_tools()` – retrieve available MCP tool metadata (`tools/list` if supported).
+5. `derive_intent_with_llm()` – contextual intent using prompt + schema + tools.
+6. `discover_schema()` – LLM-planned metadata tools (validated against inventory).
+7. `run_quality_metrics()` – LLM-selected quality tools (validated).
+8. (Implicit collection) – Results accumulated internally.
+9. `summarize_with_llm()` – LLM produces issues & recommendations.
 
-Shortcut: `run_full(prompt)` executes all steps in order.
+Shortcut: `run_full(prompt)` executes all steps in order (starting with schema/tools inventory).
 
 Example programmatic usage:
 ```python
@@ -133,6 +135,14 @@ If `OPENAI_API_KEY` is absent, LLM methods return structured fallbacks.
 - LLM selection of tools is heuristic and may reference unavailable names—calls still print for traceability.
 - Discovery parsing now attempts heuristic extraction (databases, tables, DDL, previews).
 - Add authentication headers/secrets only via `.env`; never hard-code credentials.
+
+### Single-Database Scope
+
+Current schema inventory intentionally restricts discovery to one database determined by:
+- `DATABASE` env var if set, else
+- parsed terminal component of `DATABASE_URI` (regex `/(NAME)$`).
+
+It does not enumerate all databases. To broaden scope later, reintroduce a `base_databaseList` iteration.
 
 ## 📖 References
 

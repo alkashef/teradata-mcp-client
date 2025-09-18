@@ -134,3 +134,25 @@ class LlmPlanner:
             issues=data.get('issues') or [],
             recommendations=data.get('recommendations') or [],
         )
+
+    # New contextual intent builder
+    def build_contextual_intent(self, prompt: str, schema: dict, tools: dict) -> Intent:
+        system = (
+            'You are a Teradata data quality intent parser. Given: a user prompt, a schema inventory '
+            '(databases, tables, columns), and available tools metadata, produce JSON with keys: '
+            'goal, target_patterns (list), constraints (list). Use table/column names when relevant.'
+        )
+        context = {
+            'prompt': prompt,
+            'schema_sample': {k: (v if isinstance(v, list) else str(v)) for k, v in list(schema.items())[:50]},
+            'tools': tools.get('tools') if isinstance(tools, dict) else None,
+        }
+        user = f'Context: {json.dumps(context)[:12000]}\nReturn JSON only.'
+        data = self._chat_json(system, user)
+        if not data:
+            return Intent(goal=prompt)
+        return Intent(
+            goal=data.get('goal') or prompt,
+            target_patterns=data.get('target_patterns') or [],
+            constraints=data.get('constraints') or [],
+        )

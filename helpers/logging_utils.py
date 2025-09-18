@@ -29,6 +29,14 @@ def setup_logging_from_env() -> None:
         return
     path = os.getenv('LOG_FILE')
     if not path:
+        # Attempt lazy load of .env if python-dotenv available
+        try:
+            from dotenv import load_dotenv  # type: ignore
+            load_dotenv()
+            path = os.getenv('LOG_FILE')
+        except Exception:
+            pass
+    if not path:
         return
     try:
         _LOG_FILE_HANDLE = open(path, 'a', encoding='utf-8')

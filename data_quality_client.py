@@ -16,7 +16,7 @@ Overview:
 Seven Orchestration Steps:
     1. ingest_user_prompt        – Capture raw user prompt
     2. derive_intent_with_llm    – Convert unstructured prompt into structured intent
-    3. ensure_connection         – Perform `initialize` + `initialized` handshake
+    3. ensure_connection         – Perform `initialize` handshake
     4. discover_schema           – Run LLM-planned metadata inspection tools
     5. run_quality_metrics       – Run LLM-planned quality metric tools
     6. (implicit collection)     – Aggregate per-tool outputs internally
@@ -87,11 +87,14 @@ class DataQualityOrchestrator:
         # State
         self.user_prompt: str | None = None
         self.intent: Intent | None = None
+        self.schema_inventory: dict | None = None
+        self.tool_inventory: dict | None = None
         self.discovery_plan: DiscoveryPlan | None = None
         self.discovery_results: DiscoveryResults = DiscoveryResults()
         self.quality_plan: QualityPlan | None = None
         self.quality_results: List[Dict[str, Any]] = []
         self.summary: Summary | None = None
+        self.handshake_ok: bool = False
 
     # ---- Low-level JSON-RPC -------------------------------------------------
     # ---- Step 1 --------------------------------------------------------------
@@ -105,6 +108,48 @@ class DataQualityOrchestrator:
         """
         self.user_prompt = prompt
 
+    # ---- New Step A: schema inventory --------------------------------------
+    def inventory_schema(self) -> dict:
+        """Collect list of tables & columns (placeholder until real tool calls).
+
+        Returns
+        -------
+        dict
+            Structure with keys: tables (list[str]), columns (dict[str, list[str]]).
+        """
+        if self.schema_inventory is not None:
+            return self.schema_inventory
+        import os, re
+        target_db = os.getenv('DATABASE')
+        if not target_db:
+            uri = os.getenv('DATABASE_URI', '')
+            # crude parse: teradata://user:pass@host:port/DB_NAME
+            m = re.search(r'/([A-Za-z0-9_]+)$', uri)
+            if m:
+                target_db = m.group(1)
+        tables: list[str] = []
+        columns: dict[str, list[str]] = {}
+        if target_db:
+            try:
+                tbl_list = self.mcp.call("tools/call", {"name": "base_tableList", "arguments": {"database_name": target_db}})
+                if isinstance(tbl_list, dict):
+                    r2 = tbl_list.get('result') or {}
+                    maybe_tables = r2.get('tables') if isinstance(r2, dict) else []
+                    if isinstance(maybe_tables, list):
+                        for t in maybe_tables:
+                            if isinstance(t, str):
+                                tables.append(f"{target_db}.{t}")
+            except Exception:
+                pass
+        self.schema_inventory = {"database": target_db, "tables": tables, "columns": columns}
+        return self.schema_inventory
+
+    # ---- New Step B: list tools --------------------------------------------
+    def inventory_tools(self) -> dict:
+        """Retrieve server-declared tools metadata if supported."""
+        self.tool_inventory = self.tool_inventory or self.mcp.list_tools()
+        return self.tool_inventory
+
     # ---- Step 2 --------------------------------------------------------------
     def derive_intent_with_llm(self) -> Dict[str, Any]:
         """Derive structured intent (goal, target patterns, constraints) via LLM.
@@ -116,23 +161,28 @@ class DataQualityOrchestrator:
         """
         if not self.user_prompt:
             raise ValueError("No user prompt set")
-        self.intent = self.planner.parse_intent(self.user_prompt)
+        # Prefer contextual build if inventories gathered
+        if self.schema_inventory is not None or self.tool_inventory is not None:
+            self.intent = self.planner.build_contextual_intent(
+                self.user_prompt,
+                self.schema_inventory or {},
+                self.tool_inventory or {},
+            )
+        else:
+            self.intent = self.planner.parse_intent(self.user_prompt)
         return asdict(self.intent)
 
     # ---- Step 3 --------------------------------------------------------------
     def ensure_connection(self) -> Dict[str, Any]:
-        """Perform MCP `initialize` + `initialized` handshake.
-
-        Returns
-        -------
-        dict
-            Raw response from `initialize` call (server-dependent structure).
-        """
+        """Perform MCP `initialize` handshake only (no secondary call)."""
         resp = self.mcp.initialize()
-        try:
-            self.mcp.initialized()
-        except Exception:
-            pass
+        # Success heuristic: presence of 'result' and absence of 'error'
+        if isinstance(resp, dict) and 'result' in resp and 'error' not in resp:
+            self.handshake_ok = True
+            log_line('[handshake] initialize success')
+        else:
+            self.handshake_ok = False
+            log_line('[handshake] initialize FAILED – aborting further tool calls')
         return resp
 
     # ---- Step 4 --------------------------------------------------------------
@@ -147,6 +197,20 @@ class DataQualityOrchestrator:
         if self.intent is None:
             raise ValueError("Intent must be derived before discovery")
         self.discovery_plan = self.planner.plan_discovery(self.intent)
+        available_tools = set()
+        if isinstance(self.tool_inventory, dict):
+            tl = self.tool_inventory.get('tools') if 'tools' in self.tool_inventory else []
+            if isinstance(tl, list):
+                for t in tl:
+                    if isinstance(t, dict) and 'name' in t:
+                        available_tools.add(t['name'])
+        filtered_steps = []
+        for step in self.discovery_plan.steps:
+            if available_tools and step.tool not in available_tools:
+                log_line(f"[validation] skipping unknown discovery tool: {step.tool}")
+                continue
+            filtered_steps.append(step)
+        self.discovery_plan.steps = filtered_steps
         for step in self.discovery_plan.steps:
             raw = self.mcp.call("tools/call", {"name": step.tool, "arguments": {}})
             self.discovery_parser.apply(step.tool, raw, self.discovery_results)
@@ -167,6 +231,20 @@ class DataQualityOrchestrator:
             List containing a dict per invoked quality tool (placeholder schema).
         """
         self.quality_plan = self.planner.plan_quality(self.discovery_results)
+        available_tools = set()
+        if isinstance(self.tool_inventory, dict):
+            tl = self.tool_inventory.get('tools') if 'tools' in self.tool_inventory else []
+            if isinstance(tl, list):
+                for t in tl:
+                    if isinstance(t, dict) and 'name' in t:
+                        available_tools.add(t['name'])
+        filtered_specs = []
+        for spec in self.quality_plan.dq_tools:
+            if available_tools and spec.tool not in available_tools:
+                log_line(f"[validation] skipping unknown quality tool: {spec.tool}")
+                continue
+            filtered_specs.append(spec)
+        self.quality_plan.dq_tools = filtered_specs
         for spec in self.quality_plan.dq_tools:
             self.mcp.call("tools/call", {"name": spec.tool, "arguments": {}})
             self.quality_results.append({"tool": spec.tool})
@@ -203,8 +281,24 @@ class DataQualityOrchestrator:
             Final summary structure (see :meth:`summarize_with_llm`).
         """
         self.ingest_user_prompt(prompt)
-        self.derive_intent_with_llm()
+        # Handshake first so subsequent inventory/tool listing can rely on session
         self.ensure_connection()
+        if not self.handshake_ok:
+            # Produce minimal failure summary and stop.
+            failure = {
+                "summary": "Initialization failed – no further MCP tool calls executed.",
+                "issues": ["Handshake with MCP server failed"],
+                "recommendations": [
+                    "Inspect server logs for initialize validation errors",
+                    "Verify protocolVersion and capabilities payload",
+                    "Ensure MCP_ENDPOINT is correct and reachable"
+                ],
+            }
+            return failure
+        # Inventory now that handshake completed
+        self.inventory_schema()
+        self.inventory_tools()
+        self.derive_intent_with_llm()
         self.discover_schema()
         self.run_quality_metrics()
         return self.summarize_with_llm()
