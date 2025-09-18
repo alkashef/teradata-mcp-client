@@ -1,0 +1,364 @@
+dba_databaseVersion:
+  type: tool
+  description: " Get Teradata database version information."
+  sql: |
+    select InfoKey, InfoData FROM DBC.DBCInfoV;
+
+dba_flowControl:
+  type: tool
+  description: "Get the Teradata flow control metrics for a specified date range."
+  parameters:
+    start_date:
+      description: "The start date for the query range in YYYY-MM-DD format."
+    end_date:
+      description: "The end date for the query range in YYYY-MM-DD format."
+  sql: |
+    SELECT A.THEDATE AS "Date"  
+    , A.THETIME (FORMAT '99:99:99') AS "Time"      
+    , CASE  
+        WHEN DAY_OF_WEEK = 1 THEN 'Sun'
+        WHEN DAY_OF_WEEK = 2 THEN 'Mon'
+        WHEN DAY_OF_WEEK = 3 THEN 'Tue'
+        WHEN DAY_OF_WEEK = 4 THEN 'Wed'
+        WHEN DAY_OF_WEEK = 5 THEN 'Thr'
+        WHEN DAY_OF_WEEK = 6 THEN 'Fri'
+        WHEN DAY_OF_WEEK = 7 THEN 'Sat'
+        END AS DAY_OF_WEEK
+    , A.FLOWCTLTIME AS "Flow Control Time" 
+    , (A.FLOWCTLTIME / 1000) / A.SECS AS "FlowControl%" 
+    , C.CPUUEXEC + C.CPUUSERV AS "CPUBusy"  
+    , CPUIOWAIT AS "CPUWaitForIO"    
+    , ((C.CPUUEXEC) / (C.CENTISECS * C.NCPUS)) * 100 AS "CPUEXEC%" 
+    , ((C.CPUUSERV) / (C.CENTISECS * C.NCPUS)) * 100 AS "CPUSERV%" 
+    , ((C.CPUIOWAIT) / (C.CENTISECS * C.NCPUS)) * 100 AS "WAITIO%"  
+    , ((C.CPUIDLE) / (C.CENTISECS * C.NCPUS)) * 100 AS "IDLE%"  
+    FROM DBC.RESUSAGESAWT A 
+    INNER JOIN DBC.RESUSAGESVPR B   
+        ON A.VPRID = B.VPRID
+        AND A.THETIME = B.THETIME
+    INNER JOIN DBC.RESUSAGESPMA C   
+        ON A.NODEID = C.NODEID
+        AND A.THETIME = C.THETIME
+        AND A.THEDATE = C.THEDATE
+    INNER JOIN SYS_CALENDAR.CALENDAR D  
+        ON C.THEDATE = D.CALENDAR_DATE
+    WHERE A.THEDATE BETWEEN :start_date AND :end_date
+    GROUP BY 1,2,3,4,5,6,7,8,9,10,11;    
+
+dba_featureUsage:
+  type: tool
+  description: "Get the user feature usage metrics for a specified date range."
+  parameters:
+    start_date:
+      description: "The start date for the query range in YYYY-MM-DD format."
+    end_date:
+      description: "The end date for the query range in YYYY-MM-DD format."
+  sql: |
+    SELECT 
+        CAST(A.Starttime as Date)  AS LogDate
+    ,A.USERNAME as Username
+    ,CAST(B.FEATURENAME AS VARCHAR(100)) AS FEATURENAME
+    ,SUM(GETBIT(A.FEATUREUSAGE,(2047 - B.FEATUREBITPOS))) AS FeatureUseCount
+    ,COUNT(*) AS RequestCount
+    ,SUM(AMPCPUTIME) AS AMPCPUTIME
+
+    FROM DBC.DBQLOGTBL A, 
+        DBC.QRYLOGFEATURELISTV B 
+    WHERE CAST(A.Starttime as Date) BETWEEN :start_date AND :end_date
+    GROUP BY 
+        LogDate,
+        USERNAME, 
+        FeatureName having FeatureUseCount > 0
+        ORDER BY 1,2,3;
+
+dba_userDelay:
+  type: tool
+  description: "Get the Teradata user delay metrics for a specified date range."
+  parameters:
+    start_date:
+      description: "The start date for the query range in YYYY-MM-DD format."
+    end_date:
+      description: "The end date for the query range in YYYY-MM-DD format."
+  sql: |
+    Select
+        CAST(a.Starttime as DATE) AS "Log Date"
+        ,extract(hour from a.starttime) as "Log Hour"
+        ,Username
+        ,WDName
+        ,Starttime
+        ,a.firststeptime
+        ,a.FirstRespTime
+        ,Zeroifnull(DelayTime) as DelayTime
+        , (CAST(extract(hour
+            From     ((a.firststeptime - a.StartTime) HOUR(2) TO SECOND(6) ) ) * 3600 + extract(minute
+            From     ((a.firststeptime - a.StartTime) HOUR(2) TO SECOND(6) ) ) * 60 + extract(second
+            From     ((a.firststeptime - a.StartTime) HOUR(2) TO SECOND(6) ) ) AS dec(8,2))) - zeroifnull(cast(delaytime as float)) (float)     as PrsDctnryTime
+
+        , Zeroifnull(CAST(extract(hour
+            From     ((a.firstresptime - a.firststepTime) HOUR(2) TO SECOND(6) ) ) * 3600 + extract(minute
+            From     ((a.firstresptime - a.firststepTime) HOUR(2) TO SECOND(6) ) ) * 60 + extract(second
+            From     ((a.firstresptime - a.firststepTime) HOUR(2) TO SECOND(6) ) ) AS INTEGER) )  as QryRespTime
+
+        , Zeroifnull(CAST(extract(hour
+            From     ((a.firstresptime - a.StartTime) HOUR(2) TO SECOND(6) ) ) * 3600 + extract(minute
+            From     ((a.firstresptime - a.StartTime) HOUR(2) TO SECOND(6) ) ) * 60 + extract(second
+            From     ((a.firstresptime - a.StartTime) HOUR(2) TO SECOND(6) ) ) AS INTEGER) )  as TotalTime
+        ,count(*) As NoOfQueries
+        from  DBC.DBQLogTbl a
+        
+        Where  DelayTime > 0
+        AND CAST(a.Starttime as DATE) between :start_date AND :end_date
+        Group By 1,2,3,4,5,6,7,8,9,10,11;  
+
+dba_sessionInfo:
+  type: tool
+  description: "Get the Teradata session information for user."
+  sql: |
+    SELECT
+        UserName,
+        AccountName,
+        SessionNo,
+        DefaultDataBase, 
+        LogonDate,
+        LogonTime,
+        LogonSource, 
+        LogonAcct,
+        CurrentRole, 
+        QueryBand,
+        ClientIpAddress, 
+        ClientProgramName,
+        ClientSystemUserId,
+        ClientInterfaceVersion
+    FROM DBC.SessionInfoV
+    WHERE UserName = :user_name (NOT CASESPECIFIC);
+  parameters:
+    user_name:
+      description: "user name to analyze."
+
+dba_systemSpace:
+  type: tool
+  description: "Get the Teradata total system database space usage."
+  sql: |
+    Select
+    SUM(CurrentPerm)/1024/1024/1024 AS SpaceUsed_GB
+    ,SUM(MaxPerm)/1024/1024/1024 AS SpaceAllocated_GB
+    ,SUM(CurrentPerm)/ NULLIFZERO (SUM(MaxPerm)) *100 (FORMAT 'zz9.99%') AS Percentage_Used 
+    ,SpaceAllocated_GB- SpaceUsed_GB AS FreeSpace_GB
+    FROM DBC.DiskSpace;
+
+dba_tableArchive:
+  type: prompt
+  description: "The following prompt is used to guide the Teradata DBA in finding opportunities for archiving data. (prompt_type: reporting)"
+  prompt: |
+    You are a Teradata DBA who is an expert in finding opportunities for archiving data.
+
+    ## your role will work through the phases
+    
+    ## Phase 1. 
+    Get a list of the 10 largest tables in the Teradata system using dba_tableSpace tool, ignore tables that: 
+    - start with hist_ 
+    - called All
+    - are in the DBC database
+
+    ## Phase 2.
+    For each table starting with the largest table and work to the smallest table, you will:
+    1. Get the DDL for the table using the base_tableDDL tool
+    2. Determine the best strategy for archiving the older data only
+    3. Write a Teradata SQL archiving statement to perform a insert select into a table named with the prefix of hist_
+
+    ## Phase 3
+    Bring the archiving statements together into a single script.
+    
+    ## Communication guidelines:
+        - Be concise but informative in your explanations
+        - Clearly indicate which phase the process is currently in
+        - summarize the outcome of the phase before moving to the next phase
+
+    ## Final output guidelines:
+        - will be a SQL script only
+
+
+dba_databaseLineage :
+  type: prompt
+  description: "You are a Teradata DBA who is an expert in finding the lineage of tables in a database. (prompt_type: context)"
+  prompt: |
+    You are a Teradata DBA who is an expert in finding the lineage of tables in a database.
+
+    ## your role will work through the phases
+    You will be assessing the {database_name} database and all the tables in it.
+
+    ## Phase 1 - Get a list of tables in the database
+    Get a list of tables in the Teradata system using base_tableList tool, ignore tables that: 
+    - called All
+
+    ## Phase 2 - Collect SQL for the table
+    Cycle through the list of tables, following the following two steps in order
+    Step 1. Get all the SQL that has executed against the table in the last {number_days} days using the dba_tableSqlList tool
+    Step 2. Analyze the returned SQL by cycling through each SQL statement and extract
+        1. Name of the source database and table, save as a tuple using the following format: (source_database.source_table, tardatabase.tartable)
+        2. Name of the target database and table, save as a tuple using the following format: (source_database.source_table, tardatabase.tartable)
+
+    ## Phase 3 - Create a distinct list 
+    1. Review the tuples and create a destinct list of tuples, remove duplicates tuples
+
+    ## Phase 4 - return results
+    - return the list of tuples only.
+
+    ## Communication guidelines:
+        - Be concise but informative in your explanations
+        - Clearly indicate which phase the process is currently in
+        - summarize the outcome of the phase before moving to the next phase
+
+    ## Final output guidelines:
+        - return the list of tuples only.
+        - do not return any explanation of results
+  parameters:
+    database_name:
+      name: database_name
+      description: "Name of the database to analyze for table lineage."
+      required: true
+      type_hint: str
+    number_days:
+      name: number_days
+      description: "Number of days to look back for SQL execution history (e.g., 7, 30, 90)."
+      required: true
+      type_hint: str
+
+dba_tableDropImpact:
+  type: prompt
+  description: "You are a Teradata DBA who is an expert in finding the impact of dropping a table. (prompt_type: reporting)"
+  prompt: |
+
+    You will be assessing the {table_name} table in {database_name} database and all the SQL that has executed against it.
+
+    ## Phase 1 - Get usage data
+    Get a list of sql that has executed against the table in the last {number_days} days using the dba_tableSqlList tool
+    Save this list for use in Phase 2 - you will need to reference each SQL statement in it.
+    
+    ## Phase 2 - Analyze Usage data
+    Using the SQL list collected in Phase 1:
+    1. Create two dictionaries:
+       - user_counts: to track usernames and their usage counts
+       - table_deps: to track dependent tables and their reference counts
+    2. For each SQL statement in the list:
+       - Extract and count the username who executed it
+       - Identify and count any tables that depend on our target table
+    3. Keep these counts for use in Phase 3
+
+    ## Phase 3 - Create a distinct list
+    Using the user_counts and table_deps dictionaries from Phase 2:
+    1. Create a sorted list of unique entries combining:
+       - All usernames from user_counts (with their counts)
+       - All dependent table names from table_deps (with their counts)
+
+    ## Phase 4 - return results
+    - return the list of usernames and tablenames only.
+
+    ## Communication guidelines:
+        - Be concise but informative in your explanations
+        - Clearly indicate which phase the process is currently in
+        - summarize the outcome of the phase before moving to the next phase
+
+    ## Final output guidelines:
+        - Return a markdown table with the following columns:
+            | Type | Name | Usage Count |
+            |------|------|-------------|
+            | User | username1 | count |
+            | Table | tablename1 | count |
+        - Sort the results by Usage Count in descending order
+        - Include both users and dependent tables, with Type column indicating which is which
+        - Do not include any additional explanation of results
+  parameters:
+    table_name:
+      name: table_name
+      description: "Name of the table to analyze for drop impact."
+      required: true
+      type_hint: str
+    database_name:
+      name: database_name
+      description: "Name of the database containing the table."
+      required: true
+      type_hint: str
+    number_days:
+      name: number_days
+      description: "Number of days to look back for SQL execution history (e.g., 7, 30, 90)."
+      required: true
+      type_hint: str
+
+
+dba_databaseHealthAssessment :
+  type: prompt
+  description: "You are a Teradata DBA who is an expert in assessing the health of a database. (prompt_type: reporting)"
+  prompt: |
+    Generate a comprehensive Teradata system health dashboard for the last 30 days, structured as an executive summary followed by detailed technical analysis. Create a visual dashboard using tables, charts, and color-coded indicators to highlight critical metrics and resource constraints. 
+
+    Executive Summary Section: 
+    * System overview with key performance indicators  (number of databases, number of tables, number of views, number of macros, number of user defined views, number of users and space utilization percentages) 
+    * Critical alerts highlighting databases/tables approaching space limits (use red for >85% utilization, yellow for >70%) 
+    * Top 5 resource consumption trends and usage patterns 
+
+    Detailed Technical Analysis: 
+    * Current database version and system configuration 
+    * Complete space utilization breakdown across all databases with visual charts 
+    * Top 10 space-consuming tables with growth trends and utilization percentages 
+    * CPU Resource usage heatmaps showing patterns by weekday and hour of day 
+    * IO Resource usage heatmaps showing patterns by weekday and hour of day 
+    * Memory Resource usage heatmaps showing patterns by weekday and hour of day 
+    * Flow control metrics and user delay analysis with performance bottleneck identification 
+    * Database and table activity rankings showing most frequently accessed objects 
+    * User activity patterns and resource impact analysis 
+
+    Formatting Requirements: 
+    * Use color coding: Red (critical/>85%), Yellow (warning/70-85%), Green (healthy/<70%) 
+    * Include bar charts for space utilization and usage patterns 
+    * Present data in sortable tables with key metrics highlighted 
+    * Add trend indicators (arrows/percentages) for changing metrics 
+    * Target audience: DBA management and Teradata system owners 
+    * Focus on informational assessment rather than actionable recommendation
+    * Ensure that dashboard is mobile friendly and scales easily
+
+    Think through the problem.
+
+
+dba_userActivityAnalysis:
+  type: prompt
+  description: "Analyze Teradata user activity patterns for the past 7 days (prompt_type: reporting)"
+  prompt: |
+    Analyze Teradata user activity patterns for the past 7 days, focusing on resource consumption and query behavior. Create a comprehensive analysis dashboard for DBA review with detailed breakdowns of user behavior and system impact.
+
+    Primary Analysis Requirements:
+        • Rank users by resource consumption priority: CPU time (primary), I/O operations (secondary), memory usage (tertiary)
+        • Categorize all queries by complexity type (simple/medium/complex based on execution characteristics)
+        • Provide hourly activity breakdowns showing all usage periods color coded by CPU usage
+        • Include user names directly in all reports and analysis
+    Detailed Reporting Structure:
+        • System-wide resource consumption overview with hourly heatmaps for the 7-day period
+        • Complete user ranking table showing CPU time, I/O operations, and memory usage with percentage of total system resources
+        • Activity pattern analysis displaying each user's peak activity hours and workload distribution
+    Top 5 Resource Consumers Deep Dive:
+        • Individual user profiles with recent SQL activity logs and execution statistics
+        • Table access frequency analysis showing most queried objects per user
+        • Query complexity distribution and execution time patterns
+        • Hourly activity charts showing when each high-consumption user is most active
+    Output Format:
+        - Dashboard-style presentation with sortable tables and visual charts
+        - Color-coded metrics to highlight resource usage levels
+        - Include specific query examples and table access patterns
+        - Target audience: Database administrators for performance monitoring and user guidance assessment
+        - Ensure that dashboard is mobile friendly and scales easily
+
+    Think through the problem
+
+dba_systemVoice:
+  type: prompt
+  description: "Analyze Teradata user activity patterns for the past 7 days (prompt_type: reporting)"
+  prompt: | 
+    You impersonate the Teradata system, when asked questions about "your" health, resource usage, users, flow control, etc... use the appropriate Teradata tools to get relevant system information.
+    Unless pecified, consider that the user is asking about today's metrics.
+    When asked about "your"  health, use tools like the dba_resusageSummary (just use today's date as date parameter), dba_flowControl, dba_systemSpace, 
+    When asked how "busy" you are use tools like the dba_currentUserActivity, dba_resusageSummary 
+    When asked about "your" users, use tools like the dba_sessionInfo tool to get detailed session information for a specific user.
+    When asked about "your" tables or databases, use the dba_tableSpace and dba_databaseSpace tools to analyze space usage and growth patterns.
+    When asked about projections, check your current usage (perm space, cpu, queries) and past growth pattern. Ask clarifying questions as needed.
+    In text mode, use emoji as appropriate (eg. traffic lights, moods). Be friendly and professional.
+    No need to remind the user that you impersonate a Teradata system, they know it.

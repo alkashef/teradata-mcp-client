@@ -6,6 +6,7 @@ from dataclasses import asdict
 from dotenv import load_dotenv
 from openai import OpenAI
 from .models import Intent, DiscoveryPlan, DiscoveryStep, QualityPlan, QualityToolSpec, Summary, DiscoveryResults
+from .prompts import PROMPTS
 from .logging_utils import HLINE, log_line, start_block, end_block
 
 class LlmPlanner:
@@ -64,11 +65,8 @@ class LlmPlanner:
             return {}
 
     def parse_intent(self, prompt: str) -> Intent:
-        system = (
-            'You extract structured intent for Teradata data-quality assessment. '
-            'Return JSON with keys: goal, target_patterns (list), constraints (list).'
-        )
-        user = f'Prompt: {prompt}\nReturn JSON only.'
+        system = PROMPTS['intent_system']
+        user = PROMPTS['intent_user'].format(prompt=prompt)
         data = self._chat_json(system, user)
         if not data:
             return Intent(goal=prompt)
@@ -79,11 +77,8 @@ class LlmPlanner:
         )
 
     def plan_discovery(self, intent: Intent) -> DiscoveryPlan:
-        system = (
-            'Given a Teradata DQ intent object, decide discovery steps. '
-            'Always include: databaseList, tableList. Optionally tableDDL, tablePreview.'
-        )
-        user = f'Intent: {json.dumps(asdict(intent))}\nReturn JSON with steps list (each tool + rationale).'
+        system = PROMPTS['discovery_plan_system']
+        user = PROMPTS['discovery_plan_user'].format(intent=json.dumps(asdict(intent)))
         data = self._chat_json(system, user)
         steps_raw = []
         if isinstance(data, dict):
@@ -100,13 +95,13 @@ class LlmPlanner:
         return DiscoveryPlan(steps=steps)
 
     def plan_quality(self, discovered: DiscoveryResults) -> QualityPlan:
-        system = 'Choose data quality metrics for Teradata tables. Prefer nulls, distinct, minmax.'
+    system = PROMPTS['quality_plan_system']
         disco_dict = {
             'databases': discovered.databases,
             'tables': discovered.tables,
             'ddl_keys': list(discovered.ddl.keys()),
         }
-        user = f'Discovered: {json.dumps(disco_dict)[:5000]}\nReturn JSON with dq_tools list.'
+    user = PROMPTS['quality_plan_user'].format(discovered=json.dumps(disco_dict)[:5000])
         data = self._chat_json(system, user)
         tools_raw = []
         if isinstance(data, dict):
@@ -124,8 +119,8 @@ class LlmPlanner:
         return QualityPlan(dq_tools=specs)
 
     def interpret_quality(self, raw_results: list[dict]) -> Summary:
-        system = 'Summarize Teradata data-quality metrics. Rank issues; propose actions.'
-        user = f'Metrics: {json.dumps(raw_results)[:12000]}\nReturn JSON with keys: summary, issues (list), recommendations (list).'
+    system = PROMPTS['quality_summary_system']
+    user = PROMPTS['quality_summary_user'].format(metrics=json.dumps(raw_results)[:12000])
         data = self._chat_json(system, user)
         if not data:
             return Summary(summary='No interpretation available')
@@ -137,17 +132,13 @@ class LlmPlanner:
 
     # New contextual intent builder
     def build_contextual_intent(self, prompt: str, schema: dict, tools: dict) -> Intent:
-        system = (
-            'You are a Teradata data quality intent parser. Given: a user prompt, a schema inventory '
-            '(databases, tables, columns), and available tools metadata, produce JSON with keys: '
-            'goal, target_patterns (list), constraints (list). Use table/column names when relevant.'
-        )
+        system = PROMPTS['context_intent_system']
         context = {
             'prompt': prompt,
             'schema_sample': {k: (v if isinstance(v, list) else str(v)) for k, v in list(schema.items())[:50]},
             'tools': tools.get('tools') if isinstance(tools, dict) else None,
         }
-        user = f'Context: {json.dumps(context)[:12000]}\nReturn JSON only.'
+    user = PROMPTS['context_intent_user'].format(context=json.dumps(context)[:12000])
         data = self._chat_json(system, user)
         if not data:
             return Intent(goal=prompt)
