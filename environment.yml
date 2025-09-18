@@ -9,3 +9,4 @@ dependencies:
       - python-dotenv>=1.0
       - pyyaml>=6.0.1
       - openai>=1.107.3
+      - teradata-mcp-server>=0.1.5

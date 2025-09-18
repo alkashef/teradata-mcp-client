@@ -56,6 +56,8 @@ from typing import Any, Dict, List
 from dataclasses import asdict
 import argparse
 import logging
+import time
+import os
 
 from helpers.mcp_client import McpClient
 from helpers.llm_planner import LlmPlanner
@@ -295,6 +297,14 @@ class DataQualityOrchestrator:
                 ],
             }
             return failure
+        # Optional sequencing delay to ensure server session readiness before first tool/list call
+        try:
+            delay_ms = int(os.getenv('MCP_POST_INIT_DELAY_MS', '150'))
+        except ValueError:
+            delay_ms = 150
+        if delay_ms > 0:
+            log_line(f"[handshake] post-init delay {delay_ms}ms")
+            time.sleep(delay_ms / 1000.0)
         # Inventory now that handshake completed
         self.inventory_schema()
         self.inventory_tools()

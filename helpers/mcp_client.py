@@ -17,10 +17,12 @@ class McpClient:
 
     def __init__(self) -> None:
         load_dotenv()
-        self.endpoint = os.getenv('MCP_ENDPOINT', '').rstrip('/')
-        if not self.endpoint:
+        raw_endpoint = os.getenv('MCP_ENDPOINT', '').strip()
+        if not raw_endpoint:
             print('ERROR: MCP_ENDPOINT not set', file=sys.stderr)
             sys.exit(1)
+        # Always ensure a single trailing slash to avoid 307 redirects (/mcp -> /mcp/)
+        self.endpoint = raw_endpoint.rstrip('/') + '/'
         self.auth = os.getenv('MCP_BEARER_TOKEN', '')
         self.session = requests.Session()
         self.session.headers.update({
