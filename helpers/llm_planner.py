@@ -147,3 +147,9 @@ class LlmPlanner:
             target_patterns=data.get('target_patterns') or [],
             constraints=data.get('constraints') or [],
         )
+
+    # Lightweight detector to decide if deterministic quality pipeline should run
+    def is_quality_request(self, prompt: str, intent: Intent | None = None) -> bool:
+        text = (prompt + ' ' + (intent.goal if intent else '')).lower()
+        keywords = ['data quality', 'quality', 'null', 'completeness', 'accuracy', 'profil', 'statistic']
+        return any(k in text for k in keywords)
