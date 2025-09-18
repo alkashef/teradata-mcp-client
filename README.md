@@ -8,17 +8,19 @@ Single-mode, LLM-driven data quality assessment for Teradata via the Model Conte
 
 ```
 .
-├── data_quality_client.py   # CLI entrypoint + high-level orchestrator
-├── mcp_client.py            # JSON-RPC transport + handshake
-├── llm_planner.py           # LLM intent/discovery/quality planning + summary
-├── discovery_parser.py      # Heuristic parsing of discovery tool outputs
-├── models.py                # Dataclasses (Intent, Plans, Results, Summary)
-├── json_utils.py            # Safe JSON helpers
-├── logging_utils.py         # Framed logging + separator
-├── .env                     # MCP + optional OpenAI credentials
-├── run_mcp_server.bat       # Helper script to launch MCP server (Windows)
-├── environment.yml          # Conda environment spec
-└── README.md                # This file
+├── data_quality_client.py        # CLI entrypoint + orchestrator
+├── helpers/
+│   ├── __init__.py               # Re-exports key helper classes
+│   ├── mcp_client.py             # JSON-RPC transport + handshake
+│   ├── llm_planner.py            # LLM intent/discovery/quality planning + summary
+│   ├── discovery_parser.py       # Heuristic parsing of discovery tool outputs
+│   ├── models.py                 # Dataclasses (Intent, Plans, Results, Summary)
+│   ├── json_utils.py             # Safe JSON helpers
+│   └── logging_utils.py          # Framed logging + separator
+├── .env                          # MCP + optional OpenAI credentials
+├── run_mcp_server.bat            # Helper script to launch MCP server (Windows)
+├── environment.yml               # Conda environment spec
+└── README.md                     # This file
 ```
 
 ---
@@ -111,13 +113,13 @@ If `OPENAI_API_KEY` is absent, LLM methods return structured fallbacks.
 
 ## 🧩 Module Responsibilities
 
-- `data_quality_client.py`: Orchestrates the 7-step flow; delegating to helpers.
-- `mcp_client.py`: Handles all JSON-RPC calls (`initialize`, `initialized`, `tools/call`).
-- `llm_planner.py`: LLM (or fallback) for intent parsing, discovery plan, quality plan, and summarization.
-- `discovery_parser.py`: Extracts databases, tables, DDL, and previews from tool responses.
-- `models.py`: Typed dataclasses for intent, plans, intermediate and final results.
-- `json_utils.py`: Defensive JSON loading/formatting helpers.
-- `logging_utils.py`: Standardized request/response framing + horizontal separators.
+- `data_quality_client.py`: Orchestrates the 7-step flow; delegates to helper package.
+- `helpers.mcp_client.McpClient`: JSON-RPC calls (`initialize`, `initialized`, `tools/call`).
+- `helpers.llm_planner.LlmPlanner`: LLM (or fallback) for intent parsing, planning, summarization.
+- `helpers.discovery_parser.DiscoveryParser`: Extracts databases, tables, DDL, previews.
+- `helpers.models`: Dataclasses for intent, plans, discovery/quality results, summary.
+- `helpers.json_utils`: Defensive JSON helpers.
+- `helpers.logging_utils`: Standardized request/response framing & separators.
 
 ## 📘 Protocol Field Notes
 

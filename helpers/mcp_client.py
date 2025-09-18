@@ -10,7 +10,7 @@ import requests
 import os
 import sys
 from dotenv import load_dotenv
-from logging_utils import print_request, print_response
+from .logging_utils import start_block, end_block, log_line
 
 class McpClient:
     """Lightweight JSON-RPC over HTTP client tailored for MCP server."""
@@ -35,9 +35,14 @@ class McpClient:
         payload = {'jsonrpc': '2.0', 'id': id_ or str(uuid.uuid4()), 'method': method}
         if params is not None:
             payload['params'] = params
-        print_request(payload)
+        start_block('[mcp-client => mcp-server]')
+        log_line(json.dumps(payload, indent=2))
+        end_block()
         resp = self.session.post(self.endpoint, data=json.dumps(payload).encode('utf-8'), timeout=60)
-        print_response(resp.text)
+        start_block('[mcp-client <= mcp-server]')
+        for line in resp.text.splitlines():
+            log_line(line)
+        end_block()
         try:
             data = resp.json()
         except Exception:

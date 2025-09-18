@@ -53,13 +53,15 @@ Limitations / Future Enhancements:
 
 from __future__ import annotations
 from typing import Any, Dict, List
+from dataclasses import asdict
 import argparse
 import logging
 
-from mcp_client import McpClient
-from llm_planner import LlmPlanner
-from discovery_parser import DiscoveryParser
-from models import Intent, DiscoveryPlan, QualityPlan, DiscoveryResults, Summary
+from helpers.mcp_client import McpClient
+from helpers.llm_planner import LlmPlanner
+from helpers.discovery_parser import DiscoveryParser
+from helpers.models import Intent, DiscoveryPlan, QualityPlan, DiscoveryResults, Summary
+from helpers.logging_utils import setup_logging_from_env, log_line, HLINE
 
 
 class DataQualityOrchestrator:
@@ -75,6 +77,10 @@ class DataQualityOrchestrator:
     def __init__(self) -> None:
         logging.basicConfig(level=logging.INFO, format="%(message)s")
         self.log = logging.getLogger("dq-orch")
+        setup_logging_from_env()
+        log_line(HLINE, with_time=False)
+        log_line("[orchestrator] startup")
+        log_line(HLINE, with_time=False)
         self.mcp = McpClient()
         self.planner = LlmPlanner()
         self.discovery_parser = DiscoveryParser()
@@ -111,7 +117,7 @@ class DataQualityOrchestrator:
         if not self.user_prompt:
             raise ValueError("No user prompt set")
         self.intent = self.planner.parse_intent(self.user_prompt)
-        return self.intent.__dict__
+        return asdict(self.intent)
 
     # ---- Step 3 --------------------------------------------------------------
     def ensure_connection(self) -> Dict[str, Any]:

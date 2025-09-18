@@ -1,12 +1,12 @@
 """LLM planning & summarization helper (OpenAI-compatible, fallback safe defaults)."""
 from __future__ import annotations
-from typing import Any
 import os
 import json
+from dataclasses import asdict
 from dotenv import load_dotenv
 from openai import OpenAI
-from models import Intent, DiscoveryPlan, DiscoveryStep, QualityPlan, QualityToolSpec, Summary, DiscoveryResults
-from logging_utils import HLINE
+from .models import Intent, DiscoveryPlan, DiscoveryStep, QualityPlan, QualityToolSpec, Summary, DiscoveryResults
+from .logging_utils import HLINE, log_line, start_block, end_block
 
 class LlmPlanner:
     """Encapsulates all LLM interactions with graceful fallback behavior."""
@@ -26,40 +26,43 @@ class LlmPlanner:
             except Exception:
                 self._client = None
 
-    # Core chat JSON helper
     def _chat_json(self, system: str, user: str, temperature: float = 0.2) -> dict:
         if not self._client:
             return {}
         try:
-            print(HLINE)
-            print('[user=>llm]')
-            print(user)
-            print('[llm<=user]')
+            start_block('[user=>llm]')
+            for line in user.splitlines():
+                log_line(line)
+            end_block()
+            start_block('[llm<=user]')
+            end_block()
+            start_block('[llm=>mcp-client]')
             resp = self._client.chat.completions.create(  # type: ignore
                 model=self.model,
                 messages=[{'role': 'system', 'content': system}, {'role': 'user', 'content': user}],
                 temperature=temperature,
             )
-            print('[llm=>mcp-client]')
+            end_block()
             content = resp.choices[0].message.content if resp and resp.choices else None
             if not content:
-                print('[llm<=mcp-client] (empty)')
-                print(HLINE)
+                start_block('[llm<=mcp-client] (empty)')
+                end_block()
                 return {}
             try:
                 parsed = json.loads(content)
-                print('[llm<=mcp-client] (json)')
-                print(HLINE)
+                start_block('[llm<=mcp-client] (json)')
+                end_block()
                 return parsed
             except Exception:
-                print('[llm<=mcp-client] (raw)')
-                print(HLINE)
+                start_block('[llm<=mcp-client] (raw)')
+                for line in content.splitlines():
+                    log_line(line)
+                end_block()
                 return {'raw': content}
         except Exception:
-            print(HLINE)
+            end_block()
             return {}
 
-    # Intent parsing
     def parse_intent(self, prompt: str) -> Intent:
         system = (
             'You extract structured intent for Teradata data-quality assessment. '
@@ -75,13 +78,12 @@ class LlmPlanner:
             constraints=data.get('constraints') or [],
         )
 
-    # Discovery planning
     def plan_discovery(self, intent: Intent) -> DiscoveryPlan:
         system = (
             'Given a Teradata DQ intent object, decide discovery steps. '
             'Always include: databaseList, tableList. Optionally tableDDL, tablePreview.'
         )
-        user = f'Intent: {json.dumps(intent.__dict__)}\nReturn JSON with steps list (each tool + rationale).'
+        user = f'Intent: {json.dumps(asdict(intent))}\nReturn JSON with steps list (each tool + rationale).'
         data = self._chat_json(system, user)
         steps_raw = []
         if isinstance(data, dict):
@@ -97,7 +99,6 @@ class LlmPlanner:
             ]
         return DiscoveryPlan(steps=steps)
 
-    # Quality planning
     def plan_quality(self, discovered: DiscoveryResults) -> QualityPlan:
         system = 'Choose data quality metrics for Teradata tables. Prefer nulls, distinct, minmax.'
         disco_dict = {
@@ -122,7 +123,6 @@ class LlmPlanner:
             ]
         return QualityPlan(dq_tools=specs)
 
-    # Quality interpretation
     def interpret_quality(self, raw_results: list[dict]) -> Summary:
         system = 'Summarize Teradata data-quality metrics. Rank issues; propose actions.'
         user = f'Metrics: {json.dumps(raw_results)[:12000]}\nReturn JSON with keys: summary, issues (list), recommendations (list).'

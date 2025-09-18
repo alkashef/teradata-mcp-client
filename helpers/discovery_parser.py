@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import Any, List
 import re
-from models import DiscoveryResults
+from .models import DiscoveryResults
 
 class DiscoveryParser:
     """Heuristically interprets discovery tool outputs into structured results."""

@@ -12,7 +12,7 @@ def safe_json_load(text: str):
 def truncate_str(value: str, max_len: int = 5000) -> str:
     if len(value) <= max_len:
         return value
-    return value[: max_len - 3] + "..."
+    return value[: max_len - 3] + '...'
 
 def ensure_dict(obj: Any) -> dict:
     return obj if isinstance(obj, dict) else {}
