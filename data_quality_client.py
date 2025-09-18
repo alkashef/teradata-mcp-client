@@ -133,7 +133,7 @@ class DataQualityOrchestrator:
         columns: dict[str, list[str]] = {}
         if target_db:
             try:
-                tbl_list = self.mcp.call("tools/call", {"name": "base_tableList", "arguments": {"database_name": target_db}})
+                tbl_list = self.mcp.call_tool("base_tableList", {"database_name": target_db})
                 if isinstance(tbl_list, dict):
                     r2 = tbl_list.get('result') or {}
                     maybe_tables = r2.get('tables') if isinstance(r2, dict) else []
@@ -214,7 +214,7 @@ class DataQualityOrchestrator:
             filtered_steps.append(step)
         self.discovery_plan.steps = filtered_steps
         for step in self.discovery_plan.steps:
-            raw = self.mcp.call("tools/call", {"name": step.tool, "arguments": {}})
+            raw = self.mcp.call_tool(step.tool, {})
             self.discovery_parser.apply(step.tool, raw, self.discovery_results)
         return {
             "databases": self.discovery_results.databases,
@@ -247,9 +247,23 @@ class DataQualityOrchestrator:
                 continue
             filtered_specs.append(spec)
         self.quality_plan.dq_tools = filtered_specs
+        # Provide basic argument injection: attempt database/table context if discoverable
+        default_db = None
+        if self.schema_inventory and isinstance(self.schema_inventory.get('database'), str):
+            default_db = self.schema_inventory['database']
+        first_table = None
+        if self.discovery_results.tables:
+            first_table = self.discovery_results.tables[0]
         for spec in self.quality_plan.dq_tools:
-            self.mcp.call("tools/call", {"name": spec.tool, "arguments": {}})
-            self.quality_results.append({"tool": spec.tool})
+            args: dict[str, Any] = {}
+            if default_db:
+                args['database_name'] = default_db
+            if first_table and 'table' in spec.tool:
+                # naive: if tool seems table-oriented include table_name (strip db prefix if present)
+                tbl_only = first_table.split('.', 1)[-1]
+                args['table_name'] = tbl_only
+            raw = self.mcp.call_tool(spec.tool, args)
+            self.quality_results.append({"tool": spec.tool, "result": raw.get('result') if isinstance(raw, dict) else None})
         return self.quality_results
 
     # ---- Step 7 --------------------------------------------------------------

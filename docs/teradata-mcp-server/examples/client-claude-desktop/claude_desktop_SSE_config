@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "teradata_mcp_server_sse": {
-      "command": "npx",
-      "args": ["mcp-remote", "http://localhost:8001/sse/"]
-    }
-  }
-}

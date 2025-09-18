@@ -89,3 +89,94 @@ class McpClient:
             return self.call('tools/list', {})
         except Exception:
             return {}
+
+    # Adaptive tool invocation -------------------------------------------------
+    def call_tool(self, tool: str, arguments: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        """Invoke a tool with adaptive argument & naming strategy.
+
+        Features:
+        - Normalizes generic base/quality names to canonical prefixes.
+        - Retries with argument key variants (table_name vs tableName, etc.).
+        - Caches failing (tool, frozenset(arg_keys)) signature for -32602 suppression.
+        """
+        if not hasattr(self, '_failure_cache'):
+            self._failure_cache: set[tuple[str, frozenset[str]]] = set()
+
+        canonical = self._normalize_tool_name(tool)
+        args = arguments.copy() if arguments else {}
+        signature = (canonical, frozenset(args.keys()))
+        if signature in self._failure_cache:
+            return {'error': {'code': -32602, 'message': 'suppressed cached invalid params'}, 'tool': canonical}
+
+        # First attempt direct
+        result = self.call('tools/call', {'name': canonical, 'arguments': args})
+        if self._is_invalid_params(result):
+            # Retry with key variants if any
+            for variant_args in self._argument_variants(args):
+                variant_signature = (canonical, frozenset(variant_args.keys()))
+                if variant_signature in self._failure_cache:
+                    continue
+                variant_result = self.call('tools/call', {'name': canonical, 'arguments': variant_args})
+                if not self._is_invalid_params(variant_result):
+                    return variant_result | {'_tool': canonical, '_args': variant_args}
+                self._failure_cache.add(variant_signature)
+            self._failure_cache.add(signature)
+        return result | {'_tool': canonical, '_args': args}
+
+    # Internal helpers ---------------------------------------------------------
+    def _normalize_tool_name(self, name: str) -> str:
+        # Map generic names to server canonical variants (td_ prefix where required)
+        mapping = {
+            'databaseList': 'base_databaseList',
+            'tableList': 'base_tableList',
+            'tableDDL': 'base_tableDDL',
+            'tablePreview': 'base_tablePreview',
+            # quality shortcuts
+            'missingValues': 'qlty_missingValues',
+            'distinctCategories': 'qlty_distinctCategories',
+            'univariateStatistics': 'qlty_univariateStatistics',
+        }
+        if name in mapping:
+            return mapping[name]
+        # If already namespaced leave it
+        if name.startswith(('base_', 'qlty_', 'td_base_', 'td_qlty_')):
+            return name.replace('td_base_', 'base_').replace('td_qlty_', 'qlty_')
+        return name
+
+    def _is_invalid_params(self, resp: Dict[str, Any]) -> bool:
+        err = resp.get('error') if isinstance(resp, dict) else None
+        if not isinstance(err, dict):
+            return False
+        return err.get('code') == -32602
+
+    def _argument_variants(self, args: Dict[str, Any]):
+        if not args:
+            yield {}
+            return
+        # For each key produce snake_case and camelCase variants
+        def variants_for_key(k: str):
+            base = k.replace('-', '_')
+            snake = base
+            parts = base.split('_')
+            camel = parts[0] + ''.join(p.capitalize() for p in parts[1:]) if len(parts) > 1 else base
+            return {snake, camel}
+        keys = list(args.keys())
+        variant_sets = [variants_for_key(k) for k in keys]
+        # Simple cartesian expansion with pruning (limit combinations)
+        def backtrack(i: int, current: Dict[str, Any]):
+            if i == len(keys):
+                yield current.copy()
+                return
+            original_key = keys[i]
+            for vk in variant_sets[i]:
+                current[vk] = args[original_key]
+                yield from backtrack(i + 1, current)
+            # remove for safety
+            current.pop(vk, None)
+        # Cap expansions to avoid explosion
+        count = 0
+        for combo in backtrack(0, {}):
+            yield combo
+            count += 1
+            if count > 10:
+                break

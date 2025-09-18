@@ -1,7 +1,0 @@
-tester:
-  tool:
-    - .*
-  prompt:
-    - test_*
-  resource:
-    - .*

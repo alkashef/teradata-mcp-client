@@ -95,13 +95,13 @@ class LlmPlanner:
         return DiscoveryPlan(steps=steps)
 
     def plan_quality(self, discovered: DiscoveryResults) -> QualityPlan:
-    system = PROMPTS['quality_plan_system']
+        system = PROMPTS['quality_plan_system']
         disco_dict = {
             'databases': discovered.databases,
             'tables': discovered.tables,
             'ddl_keys': list(discovered.ddl.keys()),
         }
-    user = PROMPTS['quality_plan_user'].format(discovered=json.dumps(disco_dict)[:5000])
+        user = PROMPTS['quality_plan_user'].format(discovered=json.dumps(disco_dict)[:5000])
         data = self._chat_json(system, user)
         tools_raw = []
         if isinstance(data, dict):
@@ -119,8 +119,8 @@ class LlmPlanner:
         return QualityPlan(dq_tools=specs)
 
     def interpret_quality(self, raw_results: list[dict]) -> Summary:
-    system = PROMPTS['quality_summary_system']
-    user = PROMPTS['quality_summary_user'].format(metrics=json.dumps(raw_results)[:12000])
+        system = PROMPTS['quality_summary_system']
+        user = PROMPTS['quality_summary_user'].format(metrics=json.dumps(raw_results)[:12000])
         data = self._chat_json(system, user)
         if not data:
             return Summary(summary='No interpretation available')
@@ -138,7 +138,7 @@ class LlmPlanner:
             'schema_sample': {k: (v if isinstance(v, list) else str(v)) for k, v in list(schema.items())[:50]},
             'tools': tools.get('tools') if isinstance(tools, dict) else None,
         }
-    user = PROMPTS['context_intent_user'].format(context=json.dumps(context)[:12000])
+        user = PROMPTS['context_intent_user'].format(context=json.dumps(context)[:12000])
         data = self._chat_json(system, user)
         if not data:
             return Intent(goal=prompt)
