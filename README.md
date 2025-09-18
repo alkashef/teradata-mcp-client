@@ -8,9 +8,7 @@ Single-mode, LLM-driven data quality assessment for Teradata via the Model Conte
 
 ```
 .
-├── data_quality_client.py   # CLI entrypoint (requires --prompt)
-├── orchestrator.py          # Orchestrates the seven-step workflow
-├── llm_client.py            # Isolated OpenAI wrapper
+├── data_quality_client.py   # CLI entrypoint + embedded orchestrator + LLM helper
 ├── .env                     # MCP + optional OpenAI credentials
 ├── run_mcp_server.bat       # Helper script to launch MCP server (Windows)
 ├── environment.yml          # Conda environment spec
@@ -83,7 +81,7 @@ Finally it prints a summarized dictionary with issues and recommendations.
 
 ## 🔄 Seven-Step Workflow
 
-Implemented in `DataQualityOrchestrator` (all public methods):
+Implemented inside `data_quality_client.py` (`DataQualityOrchestrator` class):
 1. `ingest_user_prompt(prompt)` – store raw user request.
 2. `derive_intent_with_llm()` – LLM parses goal, targets, constraints.
 3. `ensure_connection()` – MCP handshake (`initialize` + `initialized`).
@@ -96,7 +94,7 @@ Shortcut: `run_full(prompt)` executes all steps in order.
 
 Example programmatic usage:
 ```python
-from orchestrator import DataQualityOrchestrator
+from data_quality_client import DataQualityOrchestrator
 
 orch = DataQualityOrchestrator()
 summary = orch.run_full("Assess data quality for finance tables focusing on transactions")
@@ -107,11 +105,10 @@ If `OPENAI_API_KEY` is absent, LLM methods return structured fallbacks.
 
 ## 🧩 Class Responsibilities
 
-- `llm_client.py / LLMClient`: Intent parsing, discovery planning, quality planning, final summarization. Returns only plain dict/list objects. No side effects.
-- `orchestrator.py / DataQualityOrchestrator`: Implements protocol session management, step sequencing, tool invocation, result aggregation, and printing raw MCP frames.
-- `data_quality_client.py`: Minimal CLI entrypoint requiring `--prompt`.
+- `DataQualityOrchestrator` (in `data_quality_client.py`): Session management, step sequencing, tool invocation, results aggregation, raw frame printing.
+- `LLMClient` (in `data_quality_client.py`): Intent parsing, discovery/quality planning, summarization.
 
-## � Protocol Field Notes
+## 📘 Protocol Field Notes
 
 - `protocolVersion`: MCP protocol contract version the client proposes (here `2025-03-26`). The server may reject if incompatible.
 - `capabilities`: Declares which capability groups (tools/resources/prompts) the client can handle; sending empty dict objects signals basic support.
