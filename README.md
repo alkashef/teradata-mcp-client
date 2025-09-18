@@ -1,6 +1,6 @@
-# Teradata MCP Data Quality Runner
+# Teradata MCP Data Quality Orchestrator (LLM-First)
 
-This project demonstrates how to run the **Teradata MCP Server** in **Streamable HTTP mode** and connect to it with a Python client that performs **data quality checks** (nulls, ranges, uniqueness) on your Teradata tables.
+Single-mode, LLM-driven data quality assessment for Teradata via the Model Context Protocol (MCP). You provide a natural language prompt, the orchestrator plans metadata discovery and quality metrics, executes MCP tool calls, then summarizes issues.
 
 ---
 
@@ -8,11 +8,12 @@ This project demonstrates how to run the **Teradata MCP Server** in **Streamable
 
 ```
 .
-├── data_quality_client.py   # Python client to run DQ checks via MCP
-├── dq_config.yml            # YAML config defining tables and checks
-├── .env                     # Environment variables (MCP + DB connection)
-├── run_mcp_server.bat       # Windows script to launch MCP server
-├── environment.yml          # Conda environment definition
+├── data_quality_client.py   # CLI entrypoint (requires --prompt)
+├── orchestrator.py          # Orchestrates the seven-step workflow
+├── llm_client.py            # Isolated OpenAI wrapper
+├── .env                     # MCP + optional OpenAI credentials
+├── run_mcp_server.bat       # Helper script to launch MCP server (Windows)
+├── environment.yml          # Conda environment spec
 └── README.md                # This file
 ```
 
@@ -41,38 +42,16 @@ conda activate teradata-mcp-dq
 ```
 
 ### 3. Configure `.env`
-Copy the template and edit your DB and MCP info:
-```bash
-cp .env.example .env
-```
-
-Inside `.env`:
+Create `.env` with at minimum:
 ```env
 MCP_ENDPOINT=http://localhost:8001/mcp
-DATABASE_URI=teradata://user:password@host:1025/database
+MCP_BEARER_TOKEN=optional-token-if-required
+# Optional LLM
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o-mini
 ```
 
-### 4. Edit `dq_config.yml`
-Define which tables and columns to check:
-```yaml
-datasets:
-  - table: sales.orders
-    null_check:
-      columns: [customer_id, order_date]
-    range_check:
-      columns:
-        - column: amount
-          min: 0
-          max: 100000
-    uniqueness_check:
-      columns: [order_id]
-```
-
----
-
-## ▶️ Running
-
-### 1. Start MCP Server
+### 4. Start MCP Server
 
 On **Windows**:
 ```bat
@@ -84,31 +63,66 @@ This will open a new terminal, set Teradata connection variables, and launch:
 teradata-mcp-server --mcp_transport streamable-http --mcp_port 8001 --profile all
 ```
 
-### 2. Run Data Quality Client
+### 5. Run the Orchestrator
 
-From your main terminal:
+Provide a natural language prompt:
 ```bash
-python data_quality_client.py
+python data_quality_client.py --prompt "Assess data quality for sales and customer related tables"
 ```
 
-- Results are logged to the console.  
-- Final output is JSON on **stdout** (can be redirected to file).  
-
-Example:
-```bash
-python data_quality_client.py > dq_results.json
+The program prints each JSON-RPC request and raw response framed as:
 ```
+[mcp-client => mcp-server]
+{ ...request json... }
+[mcp-client <= mcp-server]
+...raw server body...
+```
+Finally it prints a summarized dictionary with issues and recommendations.
 
 ---
+
+## 🔄 Seven-Step Workflow
+
+Implemented in `DataQualityOrchestrator` (all public methods):
+1. `ingest_user_prompt(prompt)` – store raw user request.
+2. `derive_intent_with_llm()` – LLM parses goal, targets, constraints.
+3. `ensure_connection()` – MCP handshake (`initialize` + `initialized`).
+4. `discover_schema()` – LLM-planned metadata tools (e.g. `base_databaseList`, `base_tableList`).
+5. `run_quality_metrics()` – LLM chooses quality tool names (e.g. `qlty_missingValues`).
+6. (Implicit collection) – Results accumulated internally.
+7. `summarize_with_llm()` – LLM produces issues & recommendations.
+
+Shortcut: `run_full(prompt)` executes all steps in order.
+
+Example programmatic usage:
+```python
+from orchestrator import DataQualityOrchestrator
+
+orch = DataQualityOrchestrator()
+summary = orch.run_full("Assess data quality for finance tables focusing on transactions")
+print(summary)
+```
+
+If `OPENAI_API_KEY` is absent, LLM methods return structured fallbacks.
+
+## 🧩 Class Responsibilities
+
+- `llm_client.py / LLMClient`: Intent parsing, discovery planning, quality planning, final summarization. Returns only plain dict/list objects. No side effects.
+- `orchestrator.py / DataQualityOrchestrator`: Implements protocol session management, step sequencing, tool invocation, result aggregation, and printing raw MCP frames.
+- `data_quality_client.py`: Minimal CLI entrypoint requiring `--prompt`.
+
+## � Protocol Field Notes
+
+- `protocolVersion`: MCP protocol contract version the client proposes (here `2025-03-26`). The server may reject if incompatible.
+- `capabilities`: Declares which capability groups (tools/resources/prompts) the client can handle; sending empty dict objects signals basic support.
+- `clientInfo`: Metadata for logging/analytics on the server side.
+- SSE `data:` lines: In streamable HTTP mode, each server event includes lines beginning with `data:` containing JSON-RPC response payload fragments. The client prints raw body; parsing targets JSON objects following those markers.
 
 ## 📝 Notes
 
-- The client auto-discovers Data Quality tools from MCP (`tools/list`).
-- Only runs **nulls, range, and uniqueness** checks as defined in `dq_config.yml`.
-- Run is **one-off**; integrate into schedulers (cron/Airflow) if needed.
-- MCP server must be running before you start the client.
-
----
+- LLM selection of tools is heuristic and may reference unavailable names—calls still print for traceability.
+- Extend `discover_schema()` to parse real responses and populate `discovery_results` for richer planning.
+- Add authentication headers/secrets only via `.env`; never hard-code credentials.
 
 ## 📖 References
 
