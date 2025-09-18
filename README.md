@@ -8,7 +8,7 @@ Single-mode, LLM-driven data quality assessment for Teradata via the Model Conte
 
 ```
 .
-├── data_quality_client.py   # CLI entrypoint + embedded orchestrator + LLM helper
+├── data_quality_client.py   # CLI entrypoint + single orchestrator class
 ├── .env                     # MCP + optional OpenAI credentials
 ├── run_mcp_server.bat       # Helper script to launch MCP server (Windows)
 ├── environment.yml          # Conda environment spec
@@ -81,7 +81,7 @@ Finally it prints a summarized dictionary with issues and recommendations.
 
 ## 🔄 Seven-Step Workflow
 
-Implemented inside `data_quality_client.py` (`DataQualityOrchestrator` class):
+Implemented inside `data_quality_client.py` (`DataQualityOrchestrator`):
 1. `ingest_user_prompt(prompt)` – store raw user request.
 2. `derive_intent_with_llm()` – LLM parses goal, targets, constraints.
 3. `ensure_connection()` – MCP handshake (`initialize` + `initialized`).
@@ -105,8 +105,9 @@ If `OPENAI_API_KEY` is absent, LLM methods return structured fallbacks.
 
 ## 🧩 Class Responsibilities
 
-- `DataQualityOrchestrator` (in `data_quality_client.py`): Session management, step sequencing, tool invocation, results aggregation, raw frame printing.
-- `LLMClient` (in `data_quality_client.py`): Intent parsing, discovery/quality planning, summarization.
+Single class design:
+
+- `DataQualityOrchestrator`: Session management, step sequencing, JSON-RPC tool invocation, result aggregation, raw frame printing, and inlined LLM helper methods (intent parsing, discovery/quality planning, summarization). If no OpenAI key is configured, it supplies safe default plans and summaries.
 
 ## 📘 Protocol Field Notes
 

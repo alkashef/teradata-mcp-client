@@ -1,131 +1,91 @@
 """LLM-first Teradata MCP Data Quality Orchestrator (single-file version).
 
-Usage:
-    python data_quality_client.py --prompt "Assess data quality for schema X"
+Overview:
+    This script exposes a single class, :class:`DataQualityOrchestrator`, which
+    accepts a natural language prompt describing a Teradata data quality
+    assessment objective. It then uses an (optional) LLM to:
+      * Parse intent (goal, target patterns, constraints)
+      * Plan metadata discovery tool calls
+      * Plan quality metric tool calls
+      * Summarize collected results into issues & recommendations
 
-Seven conceptual steps (methods on DataQualityOrchestrator):
- 1. ingest_user_prompt
- 2. derive_intent_with_llm
- 3. ensure_connection
- 4. discover_schema
- 5. run_quality_metrics
- 6. (implicit collection)
- 7. summarize_with_llm
+    All interaction with the Teradata MCP Server occurs over JSON-RPC via a
+    simple HTTP POST endpoint that supports streamable events. Each outbound
+    request and raw inbound response body is printed for full transparency.
+
+Seven Orchestration Steps:
+    1. ingest_user_prompt        – Capture raw user prompt
+    2. derive_intent_with_llm    – Convert unstructured prompt into structured intent
+    3. ensure_connection         – Perform `initialize` + `initialized` handshake
+    4. discover_schema           – Run LLM-planned metadata inspection tools
+    5. run_quality_metrics       – Run LLM-planned quality metric tools
+    6. (implicit collection)     – Aggregate per-tool outputs internally
+    7. summarize_with_llm        – Produce final human-readable + JSON summary
+
+Environment Variables (.env):
+    MCP_ENDPOINT        Base URL for MCP server (e.g. http://localhost:8001/mcp)
+    MCP_BEARER_TOKEN    Optional bearer token for auth
+    OPENAI_API_KEY      Optional – enables real LLM planning/summarization
+    OPENAI_MODEL        Model name (default: gpt-4o-mini)
+    OPENAI_BASE_URL     Optional override base URL for OpenAI-compatible APIs
+
+Fallback Behavior:
+    If no `OPENAI_API_KEY` is provided, deterministic safe defaults are used:
+      * Intent: original prompt as goal, no patterns/constraints
+      * Discovery plan: database list + table list
+      * Quality plan: selected generic quality tools
+      * Summary: basic placeholder summary structure
+
+CLI Usage:
+    python data_quality_client.py --prompt "Assess data quality for schema sales.*"
+
+Programmatic Usage:
+    from data_quality_client import DataQualityOrchestrator
+    orch = DataQualityOrchestrator()
+    summary = orch.run_full("Assess data quality for finance tables")
+    print(summary)
+
+Limitations / Future Enhancements:
+    * Tool result parsing is placeholder; no deep extraction yet.
+    * Plans are heuristic and may reference unavailable tool names.
+    * Could add adaptive retries based on tool errors.
 """
 
 from __future__ import annotations
-
+from typing import Any, Dict, List
+from openai import OpenAI 
+from dotenv import load_dotenv
 import argparse
 import os
 import sys
 import uuid
 import json
 import logging
-from typing import Any, Dict, List
-
 import requests
-from dotenv import load_dotenv
-
-try:
-    from openai import OpenAI  # type: ignore
-except Exception:  # pragma: no cover
-    OpenAI = None  # type: ignore
-
-
-class LLMClient:
-    """Isolated LLM helper for intent, planning, and summarization."""
-
-    def __init__(self) -> None:
-        load_dotenv()
-        self.api_key = os.getenv("OPENAI_API_KEY", "")
-        self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-        self.base_url = os.getenv("OPENAI_BASE_URL", "").strip() or None
-        self._client = None
-        if self.api_key and OpenAI is not None:
-            kwargs = {}
-            if self.base_url:
-                kwargs["base_url"] = self.base_url
-            self._client = OpenAI(**kwargs)  # type: ignore
-
-    @property
-    def available(self) -> bool:
-        return bool(self._client)
-
-    def _chat_json(self, system: str, user: str, temperature: float = 0.2) -> Dict[str, Any]:
-        if not self.available:
-            return {}
-        try:
-            resp = self._client.chat.completions.create(  # type: ignore
-                model=self.model,
-                messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-                temperature=temperature,
-            )
-            content = resp.choices[0].message.content if resp and resp.choices else None
-            if not content:
-                return {}
-            try:
-                return json.loads(content)
-            except Exception:
-                return {"raw": content}
-        except Exception:
-            return {}
-
-    def parse_intent(self, prompt: str) -> Dict[str, Any]:
-        system = (
-            "You extract structured intent for Teradata data-quality assessment. "
-            "Return JSON with keys: goal, target_patterns (list), constraints (list)."
-        )
-        user = f"Prompt: {prompt}\nReturn JSON only."
-        data = self._chat_json(system, user)
-        if not data:
-            return {"goal": prompt, "target_patterns": [], "constraints": []}
-        data.setdefault("goal", prompt)
-        data.setdefault("target_patterns", [])
-        data.setdefault("constraints", [])
-        return data
-
-    def plan_discovery(self, intent: Dict[str, Any]) -> Dict[str, Any]:
-        system = (
-            "Given a Teradata DQ intent object, decide discovery steps. "
-            "Always include: databaseList, tableList. Optionally tableDDL, tablePreview."
-        )
-        user = f"Intent: {json.dumps(intent)}\nReturn JSON with steps list (each tool + rationale)."
-        data = self._chat_json(system, user)
-        steps = data.get("steps") if isinstance(data, dict) else None
-        if not isinstance(steps, list):
-            steps = [
-                {"tool": "base_databaseList", "why": "List databases"},
-                {"tool": "base_tableList", "why": "List tables in targets"},
-            ]
-        return {"steps": steps}
-
-    def plan_quality(self, discovered: Dict[str, Any]) -> Dict[str, Any]:
-        system = "Choose data quality metrics for Teradata tables. Prefer nulls, distinct, minmax."
-        user = f"Discovered: {json.dumps(discovered)[:5000]}\nReturn JSON with dq_tools list."
-        data = self._chat_json(system, user)
-        tools = data.get("dq_tools") if isinstance(data, dict) else None
-        if not isinstance(tools, list):
-            tools = [
-                {"tool": "qlty_missingValues", "reason": "Null ratios"},
-                {"tool": "qlty_distinctCategories", "reason": "Distinct counts"},
-                {"tool": "qlty_univariateStatistics", "reason": "Min/max"},
-            ]
-        return {"dq_tools": tools}
-
-    def interpret_quality(self, raw_results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        system = "Summarize Teradata data-quality metrics. Rank issues; propose actions."
-        user = f"Metrics: {json.dumps(raw_results)[:12000]}\nReturn JSON with keys: summary, issues (list), recommendations (list)."
-        data = self._chat_json(system, user)
-        if not data:
-            return {"summary": "No interpretation available", "issues": [], "recommendations": []}
-        data.setdefault("summary", "(missing summary)")
-        data.setdefault("issues", [])
-        data.setdefault("recommendations", [])
-        return data
 
 
 class DataQualityOrchestrator:
-    """Coordinates LLM planning + MCP tool execution for data quality."""
+    """Single-class orchestrator for LLM-guided Teradata data quality tasks.
+
+    Responsibilities:
+        * Maintain session state (intent, plans, raw results, summary)
+        * Perform MCP JSON-RPC handshake and tool invocation
+        * Inline LLM lifecycle: intent parsing, discovery planning, quality planning, summarization
+        * Provide graceful fallback defaults when LLM is unavailable
+
+    Public Step Methods (invoke in order or use :meth:`run_full`):
+        ingest_user_prompt -> derive_intent_with_llm -> ensure_connection ->
+        discover_schema -> run_quality_metrics -> summarize_with_llm
+
+    Internal LLM Helpers:
+        _llm_chat_json, _llm_parse_intent, _llm_plan_discovery,
+        _llm_plan_quality, _llm_interpret_quality
+
+    Error Handling Philosophy:
+        Keep surface area minimal. Only raise for missing prerequisites (e.g.,
+        deriving intent before prompt). Network errors return empty dicts where
+        feasible; caller can augment with retries as needed.
+    """
 
     def __init__(self) -> None:
         """Initialize environment, HTTP session, and internal state containers."""
@@ -146,7 +106,18 @@ class DataQualityOrchestrator:
         logging.basicConfig(level=logging.INFO, format="%(message)s")
         self.log = logging.getLogger("dq-orch")
 
-        self.llm = LLMClient()
+        # LLM client (inline)
+        self._llm_client = None
+        self._llm_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        if os.getenv("OPENAI_API_KEY", "") and OpenAI is not None:
+            kwargs = {}
+            base_url = os.getenv("OPENAI_BASE_URL", "").strip() or None
+            if base_url:
+                kwargs["base_url"] = base_url
+            try:
+                self._llm_client = OpenAI(**kwargs)  # type: ignore
+            except Exception:
+                self._llm_client = None
         self.user_prompt: str | None = None
         self.intent: Dict[str, Any] | None = None
         self.discovery_plan: Dict[str, Any] | None = None
@@ -157,7 +128,22 @@ class DataQualityOrchestrator:
 
     # ---- Low-level JSON-RPC -------------------------------------------------
     def _rpc(self, method: str, params: Dict[str, Any] | None = None, id_: str | None = None) -> Dict[str, Any]:
-        """Send a JSON-RPC request and print request/response frames."""
+        """Send a JSON-RPC request and print request/response frames.
+
+        Parameters
+        ----------
+        method : str
+            JSON-RPC method name (e.g. 'initialize', 'tools/call').
+        params : dict | None
+            Parameters object for the call; omitted if None.
+        id_ : str | None
+            Optional explicit request id; auto-generated UUID if absent.
+
+        Returns
+        -------
+        dict
+            Parsed JSON response (dict) or empty dict on parse/error failure.
+        """
         payload = {"jsonrpc": "2.0", "id": id_ or str(uuid.uuid4()), "method": method}
         if params is not None:
             payload["params"] = params
@@ -177,20 +163,38 @@ class DataQualityOrchestrator:
 
     # ---- Step 1 --------------------------------------------------------------
     def ingest_user_prompt(self, prompt: str) -> None:
-        """Store raw natural language request."""
+        """Store raw natural language request.
+
+        Parameters
+        ----------
+        prompt : str
+            Free-form natural language description of the desired DQ assessment.
+        """
         self.user_prompt = prompt
 
     # ---- Step 2 --------------------------------------------------------------
     def derive_intent_with_llm(self) -> Dict[str, Any]:
-        """Derive structured intent (goal, targets, constraints) via LLM."""
+        """Derive structured intent (goal, target patterns, constraints) via LLM.
+
+        Returns
+        -------
+        dict
+            Intent object with keys: goal (str), target_patterns (list[str]), constraints (list[str]).
+        """
         if not self.user_prompt:
             raise ValueError("No user prompt set")
-        self.intent = self.llm.parse_intent(self.user_prompt)
+        self.intent = self._llm_parse_intent(self.user_prompt)
         return self.intent
 
     # ---- Step 3 --------------------------------------------------------------
     def ensure_connection(self) -> Dict[str, Any]:
-        """Perform MCP initialize + initialized handshake."""
+        """Perform MCP `initialize` + `initialized` handshake.
+
+        Returns
+        -------
+        dict
+            Raw response from `initialize` call (server-dependent structure).
+        """
         init_params = {
             "protocolVersion": "2025-03-26",
             "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
@@ -205,10 +209,16 @@ class DataQualityOrchestrator:
 
     # ---- Step 4 --------------------------------------------------------------
     def discover_schema(self) -> Dict[str, Any]:
-        """Execute metadata discovery tools per LLM plan (placeholder parsing)."""
+        """Execute metadata discovery tools per LLM plan (placeholder parsing).
+
+        Returns
+        -------
+        dict
+            Accumulated discovery results structure (databases, tables, ddl, previews).
+        """
         if self.intent is None:
             raise ValueError("Intent must be derived before discovery")
-        self.discovery_plan = self.llm.plan_discovery(self.intent)
+        self.discovery_plan = self._llm_plan_discovery(self.intent)
         for step in self.discovery_plan.get("steps", []):
             tool = step.get("tool")
             if not tool:
@@ -218,8 +228,14 @@ class DataQualityOrchestrator:
 
     # ---- Step 5 --------------------------------------------------------------
     def run_quality_metrics(self) -> List[Dict[str, Any]]:
-        """Call LLM-selected quality tools and collect lightweight metadata."""
-        self.quality_plan = self.llm.plan_quality(self.discovery_results)
+        """Call LLM-selected quality tools and collect lightweight metadata.
+
+        Returns
+        -------
+        list[dict]
+            List containing a dict per invoked quality tool (placeholder schema).
+        """
+        self.quality_plan = self._llm_plan_quality(self.discovery_results)
         for spec in self.quality_plan.get("dq_tools", []):
             name = spec.get("tool")
             if not name:
@@ -230,19 +246,121 @@ class DataQualityOrchestrator:
 
     # ---- Step 7 --------------------------------------------------------------
     def summarize_with_llm(self) -> Dict[str, Any]:
-        """Produce LLM-generated summary + recommendations."""
-        self.summary = self.llm.interpret_quality(self.quality_results)
+        """Produce LLM-generated summary + recommendations.
+
+        Returns
+        -------
+        dict
+            Summary object with keys: summary (str), issues (list), recommendations (list).
+        """
+        self.summary = self._llm_interpret_quality(self.quality_results)
         return self.summary
 
     # ---- Convenience ---------------------------------------------------------
     def run_full(self, prompt: str) -> Dict[str, Any]:
-        """Run all orchestration steps and return final summary dict."""
+        """Run all orchestration steps and return final summary.
+
+        Parameters
+        ----------
+        prompt : str
+            Natural language description of data quality assessment goal.
+
+        Returns
+        -------
+        dict
+            Final summary structure (see :meth:`summarize_with_llm`).
+        """
         self.ingest_user_prompt(prompt)
         self.derive_intent_with_llm()
         self.ensure_connection()
         self.discover_schema()
         self.run_quality_metrics()
         return self.summarize_with_llm()
+
+    # ---- Internal LLM helpers ----------------------------------------------
+    def _llm_available(self) -> bool:
+        """Return True if a real LLM client is configured."""
+        return bool(self._llm_client)
+
+    def _llm_chat_json(self, system: str, user: str, temperature: float = 0.2) -> Dict[str, Any]:
+        """Execute chat completion and attempt to parse JSON content.
+
+        Returns empty dict when LLM unavailable or parsing fails.
+        """
+        if not self._llm_available():
+            return {}
+        try:
+            resp = self._llm_client.chat.completions.create(  # type: ignore
+                model=self._llm_model,
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                temperature=temperature,
+            )
+            content = resp.choices[0].message.content if resp and resp.choices else None
+            if not content:
+                return {}
+            try:
+                return json.loads(content)
+            except Exception:
+                return {"raw": content}
+        except Exception:
+            return {}
+
+    def _llm_parse_intent(self, prompt: str) -> Dict[str, Any]:
+        """Convert free-form user prompt into structured intent object."""
+        system = (
+            "You extract structured intent for Teradata data-quality assessment. "
+            "Return JSON with keys: goal, target_patterns (list), constraints (list)."
+        )
+        user = f"Prompt: {prompt}\nReturn JSON only."
+        data = self._llm_chat_json(system, user)
+        if not data:
+            return {"goal": prompt, "target_patterns": [], "constraints": []}
+        data.setdefault("goal", prompt)
+        data.setdefault("target_patterns", [])
+        data.setdefault("constraints", [])
+        return data
+
+    def _llm_plan_discovery(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate ordered discovery tool plan given intent."""
+        system = (
+            "Given a Teradata DQ intent object, decide discovery steps. "
+            "Always include: databaseList, tableList. Optionally tableDDL, tablePreview."
+        )
+        user = f"Intent: {json.dumps(intent)}\nReturn JSON with steps list (each tool + rationale)."
+        data = self._llm_chat_json(system, user)
+        steps = data.get("steps") if isinstance(data, dict) else None
+        if not isinstance(steps, list):
+            steps = [
+                {"tool": "base_databaseList", "why": "List databases"},
+                {"tool": "base_tableList", "why": "List tables in targets"},
+            ]
+        return {"steps": steps}
+
+    def _llm_plan_quality(self, discovered: Dict[str, Any]) -> Dict[str, Any]:
+        """Select quality metric tools based on discovered metadata."""
+        system = "Choose data quality metrics for Teradata tables. Prefer nulls, distinct, minmax."
+        user = f"Discovered: {json.dumps(discovered)[:5000]}\nReturn JSON with dq_tools list."
+        data = self._llm_chat_json(system, user)
+        tools = data.get("dq_tools") if isinstance(data, dict) else None
+        if not isinstance(tools, list):
+            tools = [
+                {"tool": "qlty_missingValues", "reason": "Null ratios"},
+                {"tool": "qlty_distinctCategories", "reason": "Distinct counts"},
+                {"tool": "qlty_univariateStatistics", "reason": "Min/max"},
+            ]
+        return {"dq_tools": tools}
+
+    def _llm_interpret_quality(self, raw_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Interpret raw per-tool metric results into human-oriented summary."""
+        system = "Summarize Teradata data-quality metrics. Rank issues; propose actions."
+        user = f"Metrics: {json.dumps(raw_results)[:12000]}\nReturn JSON with keys: summary, issues (list), recommendations (list)."
+        data = self._llm_chat_json(system, user)
+        if not data:
+            return {"summary": "No interpretation available", "issues": [], "recommendations": []}
+        data.setdefault("summary", "(missing summary)")
+        data.setdefault("issues", [])
+        data.setdefault("recommendations", [])
+        return data
 
 
 def main() -> None:
