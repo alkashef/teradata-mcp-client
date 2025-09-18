@@ -8,7 +8,13 @@ Single-mode, LLM-driven data quality assessment for Teradata via the Model Conte
 
 ```
 .
-├── data_quality_client.py   # CLI entrypoint + single orchestrator class
+├── data_quality_client.py   # CLI entrypoint + high-level orchestrator
+├── mcp_client.py            # JSON-RPC transport + handshake
+├── llm_planner.py           # LLM intent/discovery/quality planning + summary
+├── discovery_parser.py      # Heuristic parsing of discovery tool outputs
+├── models.py                # Dataclasses (Intent, Plans, Results, Summary)
+├── json_utils.py            # Safe JSON helpers
+├── logging_utils.py         # Framed logging + separator
 ├── .env                     # MCP + optional OpenAI credentials
 ├── run_mcp_server.bat       # Helper script to launch MCP server (Windows)
 ├── environment.yml          # Conda environment spec
@@ -103,11 +109,15 @@ print(summary)
 
 If `OPENAI_API_KEY` is absent, LLM methods return structured fallbacks.
 
-## 🧩 Class Responsibilities
+## 🧩 Module Responsibilities
 
-Single class design:
-
-- `DataQualityOrchestrator`: Session management, step sequencing, JSON-RPC tool invocation, result aggregation, raw frame printing, and inlined LLM helper methods (intent parsing, discovery/quality planning, summarization). If no OpenAI key is configured, it supplies safe default plans and summaries.
+- `data_quality_client.py`: Orchestrates the 7-step flow; delegating to helpers.
+- `mcp_client.py`: Handles all JSON-RPC calls (`initialize`, `initialized`, `tools/call`).
+- `llm_planner.py`: LLM (or fallback) for intent parsing, discovery plan, quality plan, and summarization.
+- `discovery_parser.py`: Extracts databases, tables, DDL, and previews from tool responses.
+- `models.py`: Typed dataclasses for intent, plans, intermediate and final results.
+- `json_utils.py`: Defensive JSON loading/formatting helpers.
+- `logging_utils.py`: Standardized request/response framing + horizontal separators.
 
 ## 📘 Protocol Field Notes
 
@@ -119,7 +129,7 @@ Single class design:
 ## 📝 Notes
 
 - LLM selection of tools is heuristic and may reference unavailable names—calls still print for traceability.
-- Extend `discover_schema()` to parse real responses and populate `discovery_results` for richer planning.
+- Discovery parsing now attempts heuristic extraction (databases, tables, DDL, previews).
 - Add authentication headers/secrets only via `.env`; never hard-code credentials.
 
 ## 📖 References
