@@ -6,6 +6,7 @@ import json
 from dotenv import load_dotenv
 from openai import OpenAI
 from models import Intent, DiscoveryPlan, DiscoveryStep, QualityPlan, QualityToolSpec, Summary, DiscoveryResults
+from logging_utils import HLINE
 
 class LlmPlanner:
     """Encapsulates all LLM interactions with graceful fallback behavior."""
@@ -30,19 +31,32 @@ class LlmPlanner:
         if not self._client:
             return {}
         try:
+            print(HLINE)
+            print('[user=>llm]')
+            print(user)
+            print('[llm<=user]')
             resp = self._client.chat.completions.create(  # type: ignore
                 model=self.model,
                 messages=[{'role': 'system', 'content': system}, {'role': 'user', 'content': user}],
                 temperature=temperature,
             )
+            print('[llm=>mcp-client]')
             content = resp.choices[0].message.content if resp and resp.choices else None
             if not content:
+                print('[llm<=mcp-client] (empty)')
+                print(HLINE)
                 return {}
             try:
-                return json.loads(content)
+                parsed = json.loads(content)
+                print('[llm<=mcp-client] (json)')
+                print(HLINE)
+                return parsed
             except Exception:
+                print('[llm<=mcp-client] (raw)')
+                print(HLINE)
                 return {'raw': content}
         except Exception:
+            print(HLINE)
             return {}
 
     # Intent parsing
